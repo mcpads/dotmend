@@ -31,3 +31,11 @@ Images from external generators, including Imagen, can enter the same workflow t
 Dotmend runs as a native Rust MCP server with a local browser interface. The agent manages that interface through MCP tools. Current client connections use the stateless MCP protocol `2026-07-28`.
 
 It focuses on making and modifying retro game assets. Font rendering and layer composition are planned; ROM insertion and verification inside a running game belong to the surrounding toolchain.
+
+## Get started with your agent
+
+Give your agent this repository and ask:
+
+> Install Dotmend from https://github.com/mcpads/dotmend. Follow `INSTALL.md`, connect it to my MCP client, and verify that it works. Then help me open an asset to edit.
+
+Your agent handles the download, setup, and connection checks. Releases provide native builds for Windows, macOS, and Linux. You do not need to build the app or run terminal commands yourself.

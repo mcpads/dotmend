@@ -17,9 +17,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--workspace" => root = args.next().ok_or("--workspace requires a path")?.into(),
+            "--version" | "-V" => {
+                println!("dotmend {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
             "--help" | "-h" => {
                 println!(
-                    "dotmend [--workspace PATH]\nMCP stdio server. Open the human screen with open_workbench; no standalone web process."
+                    "dotmend [--workspace PATH] [--version]\nMCP stdio server. Open the human screen with open_workbench; no standalone web process."
                 );
                 return Ok(());
             }

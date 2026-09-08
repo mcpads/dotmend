@@ -204,6 +204,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dotmend"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "png",
+ "reqwest",
+ "rmcp",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -887,24 +905,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "dotmend"
-version = "0.0.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "png",
- "reqwest",
- "rmcp",
- "rusqlite",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tokio",
 ]
 
 [[package]]

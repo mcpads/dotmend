@@ -630,10 +630,14 @@ impl Workspace {
                 file.write_all(bytes).map_err(storage_error)?;
                 file.sync_all().map_err(storage_error)?;
             }
+            // Rust's portable file API cannot open and sync directories on Windows.
+            // File contents are synced above on every host before the atomic rename.
+            #[cfg(unix)]
             fs::File::open(temp.path())
                 .and_then(|directory| directory.sync_all())
                 .map_err(storage_error)?;
             fs::rename(temp.path(), &destination).map_err(storage_error)?;
+            #[cfg(unix)]
             fs::File::open(&parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(storage_error)?;

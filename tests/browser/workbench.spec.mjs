@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
 
-const binary = resolve("target/debug/dotmend");
+const binary = resolve(`target/debug/dotmend${process.platform === "win32" ? ".exe" : ""}`);
 function mcpClient(workspace, runtimeDirectory=join(workspace,"runtime"), perRequestMetadata=true) {
   const child = spawn(binary, ["--workspace", workspace], { stdio: ["pipe", "pipe", "pipe"], env:{...process.env,DOTMEND_RUNTIME_DIR:runtimeDirectory} });
   const controlId = randomUUID();
