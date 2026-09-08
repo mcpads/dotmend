@@ -1,0 +1,112 @@
+# Editing art through MCP
+
+This guide is served verbatim at `dotmend://guides/editing`. Use `tools/list` for exact input and output schemas. MCP uses `2026-07-28`: send protocolVersion and clientCapabilities in each request's reserved `_meta` fields; `server/discover` is optional and `initialize` is not supported. Server-authored instructions, descriptions and errors are English. Preserve caller-authored text in its original language, including non-English instructions, labels and feedback.
+
+Art coordinates start at the top-left `(0,0)`, with `+x` right and `+y` down. The right and bottom edges of `{x,y,width,height}` are exclusive. Reference images have their own source coordinates.
+
+## Presenting work to a human
+
+Humans paint with palette colors, mark suspected issues, undo the last stroke once and save. Handle collections, filters, past candidates, regions and reviews through conversation and tools.
+
+1. Choose a fresh random `control_id` per independent task (16..128 ASCII letters, digits, underscores or hyphens); retain it across calls and connections. Call `open_workbench({control_id})` for the instance ID and URL. Do not bypass another owner or the shared limit. Read `inspect_presentation({})`; no existing view returns `presentation:null`.
+2. Call `present_art({control_id,workbench_id,view})`. Set `view.title`, `note` and `items` to describe the user's task. An art item is `{kind:"art",art_id,label,region,scale,editable,request_id?}`. Attach `request_id` to an editable item carrying out a protected request.
+3. Copy the freshly read IDs into `view.expected_presentation_id` and `view.expected_state_id`. Both keys must be explicit `null` for the first view. On conflict, read the human's latest edits first.
+4. Read the explicit save from `inspect_presentation` at `saved.art_ids` and `saved.state_id`. Current drafts are at `state.art_ids`; `dirty` distinguishes them from the last explicit save. Saving is not acceptance.
+
+Do not close the screen while the human is working. Finish with `close_workbench({control_id,workbench_id})` and check its result. `inspect_workbench({control_id})` distinguishes `owned`, `closing`, `busy` and `closed` without renewing activity. Reopening with the same control_id reuses its ID and URL and renews activity; it does not change its timeout. Successful presentation and human actions renew activity; polling does not. The default idle timeout is 1800 seconds, configurable from 1 to 1800. HTTP ends when the MCP process hosting it exits or the idle deadline expires; art and drafts remain.
+
+One explicit controller owns each workspace's screen, with a shared maximum of four. The same control_id works across MCP connections; different tasks remain separate even on one connection. Share only the workbench URL with the human. Independent candidate creation does not require screen control. Never bypass control using shell servers, alternate runtime directories or lock-file changes. The local HTTP interface is not an MCP transport or a public agent mutation API. Closing a forwarding MCP connection does not close the host's screen. If close returns closing, inspect until closed.
+
+For collections and filters, use `list_art` and present the selected candidates in order. For history, inspect parent IDs or archived presentations and states. `inspect_presentation({presentation_id,state_id})` is read-only; use `present_art` to change the visible screen. A response with `is_current:false` is not the current screen.
+
+Reference items use `{kind:"reference",art_id,source_hash,label,region,scale}` and source-image coordinates; they are read-only. For playback, supply existing frames in a read-only art item's `playback`, show the full first `art_id`, and specify every frame's `duration_ms`. If timing is unknown, show frames side by side. All playback frames count toward the total display area. Prepare narrower crops or native-size views yourself; users should not have to learn IDs, coordinates or validation settings.
+
+## Reading human issue marks
+
+The human toggles **Mark issues** to add pixels with a left click or drag and remove them with a right click or drag. Choosing a palette color returns to painting. Marks are a separate overlay, not palette edits. Static art can be marked even when read-only or protected. Reference images and playback cannot be marked; present a specific still-art candidate when needed.
+
+Read `state.concerns` for current draft marks or `saved.concerns` with `saved.state_id` for the explicit save. Missing concern fields mean an empty list. Each entry is `{item_index,art_id,bounds,pixels:[{x,y}]}` in full-art coordinates. `bounds` encloses the exact marked pixels for observation; it does not mean every pixel in the rectangle was marked. Pass the entry's `art_id` and `bounds` to `focus_art` with explicit `context_padding` and `scale`. Use its exact `pixels` if a later, authorized request needs a selection.
+
+Within one presentation, human painting retains marked coordinates and associates them with that state's new candidate. It does not automatically resolve an issue. Read the prior state or explicit save to recover the previous candidate and marks. New agent presentations start without marks; old presentation states remain available. Do not silently transfer marks to a different candidate or frame.
+
+Marking is atomic per stroke, shares one undo with painting, and persists before Save. Undo restores both art and marks from the preceding changing stroke. Duplicate additions and removal of unmarked pixels do not consume undo. The limit is 4096 input pixels per marking stroke and 4096 marked pixels across a presentation.
+
+Marks request observation. They are not a failed constraint check, permission to edit, a protection change, rejection, or acceptance. Inspect the marked candidate and follow the existing request and the user's expressed intent before editing or recording a judgment.
+
+## Starting from a request
+
+1. Find requests with `list_edit_requests({status:"pending"})`. Follow `next_cursor` with the same filter.
+2. Read `inspect_edit_request({request_id})` for the base, intent, target, selections, protection, references and feedback. `previous_review` is the pinned review that led to this request; `latest_review` is the current judgment of this request's result. Distinguish follow-up instructions from earlier requests.
+3. Check target dimensions, palette **order**, transparent index, allowed indices and additional constraints. Equal RGB values do not make two indices interchangeable. Do not remove unknown constraints or invent mandatory palette roles.
+4. Call `validate_art({art_id})`. `fail` means an observed violation; `unknown` means an unsupported constraint. Both block export. Malformed check parameters produce a tool input error.
+
+## Focusing and selecting
+
+Call `focus_art` with the actual candidate ID, `region`, `context_padding` and `scale`. Add `include_indices`, `grid`, `compare_to_art_id` or `reference` when needed. Diagnostic `locations[].region` identifies an observation area, not write permission. A baseline location with role `expected` is the required row, not necessarily a violating pixel.
+
+`views[].image_index` counts image blocks only. Convert display positions through the returned region and scale to full-art coordinates before editing. A reference view with `source_pixel_top_left_xy` has a `source_hash` rather than a target `art_id`. Specify source and target regions independently.
+
+Use `create_selection` to store a rectangle, explicit pixels or a connected region. Connected selections require a seed, palette indices and 4- or 8-neighbor connectivity. Read the exact mask from the returned `mask_uri` through `resources/read`. A selection is pinned to its base candidate; create a new one for a different base or frame.
+
+Assign roles through `request_edit.write_selection_id` and `protected_selection_ids`. Link a new instruction with `previous_request_id`, and a particular feedback record with `previous_review_id`. Existing requests and protection remain immutable.
+
+## Editing with small actions
+
+### Choose the repair before changing pixels
+
+First inspect the whole image at `scale:1`, then focus on the issue with context. State one visual problem, the intended improvement, and the features to preserve. Treat an aesthetic diagnosis as a hypothesis, distinct from a failed constraint check. Use supplied references and palette roles; do not infer missing game rules or character details.
+
+| Observed problem | Repair to try |
+| --- | --- |
+| A wrong color or isolated pixel, with the shape still correct | Change only the relevant indices or pixels. |
+| A broken contour, proportion, gap, or cluster of pixels | Reconstruct the smallest meaningful region that contains the shape and its boundary. |
+| A misplaced fragment whose shape is already useful | Copy from a fixed candidate and restore its old location in one action. |
+| Uncertain interpretation or several plausible shapes | Make two alternatives from the same baseline and compare them before continuing. |
+
+Reconstruction does not require a separate erase call. Prefer a complete `paint_rows` replacement when the final patch is known, with `null` only where pixels must stay untouched. Explicitly replace obsolete pixels as well as adding new ones. If clearing and drawing are separate operations, put both in one `edit_art` call so a failure leaves the baseline intact and a blank intermediate is not presented to the human.
+
+Clear only to an explicitly allowed transparent index or a known background/restored pixel value. Index 0 is not automatically transparent; targets without transparency still need valid palette indices. For irregular writable regions, use explicit pixels or rows that skip protection. A broad `fill_rect` crossing protected pixels fails even if later operations restore them.
+
+Keep the baseline ID, bind the request's selection and protection, and change one visual hypothesis per candidate. For a structural repair, work from silhouette and major color regions toward contour and small accents, inspecting each completed pass. Preserve the chosen lighting, outline, and distinguishing features supplied by the task. Do not keep adding highlights or isolated pixels merely because a previous attempt looked wrong.
+
+Compare against the baseline after each action, first at actual size and then enlarged; include related frames when relevant. Check the intended improvement, boundary continuity, preserved details, and unintended visible changes separately from numeric constraint validation. A smaller diff or a passing validator does not prove better art. If the repair does not help, branch again from the retained baseline instead of accumulating corrections on it. Ask for human judgment through conversation when the alternatives remain ambiguous; saving alone is not a judgment.
+
+### Apply and inspect an action
+
+Pass `request_id`, the current `art_id`, a permitted `write_region` and `operations` to `edit_art`. Omitting `request_id` creates an independent edit without that request's protection. Always include it when carrying out a protected request.
+
+- `set_pixels` changes exact coordinates and indices.
+- `paint_rows` writes a rectangular array; `null` preserves a pixel. Transparency uses the integer transparent index.
+- `replace_index` replaces matching indices within a region.
+- `paste` copies an immutable source region. `over` skips source transparency; `replace` writes every pixel. Palette and transparent index must match.
+- `fill_rect` writes the whole rectangle. Overlapping protection fails the entire action.
+
+Any attempted write outside the permitted region or into protection fails the complete action, even when writing the same index or restoring it in a later operation. Keep the returned candidate ID and use it for the next action. A no-op returns the existing ID. Resume from an earlier candidate ID to undo agent edits.
+
+Check changed indices and visible differences with `compare_art` or comparison in `focus_art`. After a local edit, inspect the whole art using `render_art` at `scale:1`. Geometric validity and aesthetic judgment are separate.
+
+## Applying edits across assets
+
+`render_art_set` compares explicit candidates, order and optional anchors. Supply durations only when known. Visual comparability does not establish edit compatibility.
+
+Use `edit_art_set` with `preview:true` before applying shared coordinates and operations. For protected work, provide exactly one `request_bindings` entry per candidate. Apply the same inputs with the returned `plan_hash` as `expected_plan_hash`. Any incompatible target or protection violation leaves the whole set unchanged. Do not assume corresponding parts of different poses use the same coordinates.
+
+## Importing, submitting and recovering
+
+For externally generated images, use `prepare_image` with explicit crop, resize, palette mapping and transparency settings. It accepts local RGB/RGBA PNG input; generation success does not establish target validity. `attach_reference` preserves the original or reference without changing art pixels. `create_art` can create exact index data or import an exported bundle.
+
+Submit the final candidate with `submit_edit_result({request_id,result_art_id,notes})`. Submission checks ancestry and preservation outside the permitted pixels; it does not record acceptance. Use `review_edit_result` only for the user's expressed judgment, notes and regional feedback, with the freshly read `expected_review_id`. Read reviews and follow-ups through `inspect_edit_request`.
+
+After a lost response, inspect ownership, requests, candidates and provenance before retrying. An observation failure does not authorize replaying an edit on a new base. Identical submission request, candidate and notes reuse the same result; different data conflicts. For `plan_mismatch`, preview the same inputs again. For protection errors, inspect the operation, coordinates and request selections. A changed intent requires a new request.
+
+`export_art` requires every mandatory check to pass. Distinguish preview PNG from exact palette-index data. Report only observed stages: candidate creation, constraint validation, human acceptance and actual game verification.
+
+## Limits and errors
+
+Canvas dimensions are at most 1024 per side and 262144 total pixels. An edit call has at most 256 operations and a total write budget. Sets and frame lists have at most 16 items. Inspect `list_art.limits` and the tool schemas for full limits.
+
+Preview scale is 1..64. Combined focus or frame output is at most 1048576 pixels, including references. Reduce regions, padding, scale or optional outputs explicitly when needed. Index lookup and explicit selection input are limited to 4096 pixels each. Follow history cursors; partial observation is not a complete review.
+
+Each MCP process admits at most 32 concurrent tool operations, with a burst budget of 64 replenished at 64 calls per second. A rejected call returns a tool error with code `rate_limited` and `details.retry_after_ms`; await pending work and honor that delay. Dependent edits must remain sequential.
+
+Tool execution failures return `isError:true` and matching JSON in `structuredContent` and text content. Protocol errors use JSON-RPC errors. Read `error.code` and structured details to recover; do not parse English message wording as a stable identifier. Caller-authored text and diagnostic values retain their original contents and language.
