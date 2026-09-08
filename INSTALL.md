@@ -11,11 +11,10 @@ This file is for the agent performing installation. Handle setup and verificatio
 | Host | Asset |
 | --- | --- |
 | Windows x64 | `dotmend-x86_64-pc-windows-msvc.zip` |
-| macOS Apple Silicon | `dotmend-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `dotmend-x86_64-apple-darwin.tar.gz` |
+| macOS 26 or newer, Apple Silicon | `dotmend-aarch64-apple-darwin.tar.gz` |
 | Linux x64 with glibc 2.35 or newer | `dotmend-x86_64-unknown-linux-gnu.tar.gz` |
 
-macOS builds target macOS 11 or newer and are tested on macOS 15. Windows builds are tested on Windows Server 2022; Linux builds on Ubuntu 22.04. The binaries are not signed or notarized. Do not disable OS security controls to launch them; if launch is blocked, use an authorized source build or explain the specific OS approval needed. Other architectures and musl Linux require a source build and local verification.
+macOS builds target and are tested on macOS 26; Intel Macs are outside the supported targets. Windows builds are tested on Windows Server 2022; Linux builds on Ubuntu 22.04. The binaries are not signed or notarized. Do not disable OS security controls to launch them; if launch is blocked, use an authorized source build or explain the specific OS approval needed. Other architectures and musl Linux require a source build and local verification.
 
 ## Install and connect
 
