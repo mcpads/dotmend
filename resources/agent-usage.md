@@ -112,3 +112,12 @@ Preview scale is 1..64. Combined focus or frame output is at most 1048576 pixels
 Each MCP process admits at most 32 concurrent tool operations, with a burst budget of 64 replenished at 64 calls per second. A rejected call returns a tool error with code `rate_limited` and `details.retry_after_ms`; await pending work and honor that delay. Dependent edits must remain sequential.
 
 Tool execution failures return `isError:true` and matching JSON in `structuredContent` and text content. Protocol errors use JSON-RPC errors. Read `error.code` and structured details to recover; do not parse English message wording as a stable identifier. Caller-authored text and diagnostic values retain their original contents and language.
+
+
+### Import a PNG
+
+1. Inspect an existing target art, or call `create_art` with the supplied target and `initial: {"kind":"fill","index":<allowed index>}`. Palette colors use `#RRGGBB`; `transparent_index` carries transparency. Obtain missing required target conditions from the caller.
+2. Call `prepare_image` with that `target_art_id`, a workspace-relative `source_path`, and explicit crop, resize, alpha, color mapping and dither settings.
+3. Use the returned `art_id` for inspection, validation, editing and presentation. Read conversion diagnostics and verify game index identity when required.
+
+On a path error, use `details.workspace_root` to copy the file to a non-conflicting destination, verify its bytes and retry the relative path. Preserve the source. Report unavailable file access if copying cannot proceed. Keep existing images in the file workflow; reserve inline indices for caller-supplied index data and `bundle_path` for exported Dotmend art.

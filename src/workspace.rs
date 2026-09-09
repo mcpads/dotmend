@@ -156,6 +156,12 @@ impl Workspace {
         insert_arts(&transaction, arts)?;
         transaction.commit().map_err(storage_error)
     }
+    fn input_path_error(&self, code: &str, message: impl std::fmt::Display) -> ArtError {
+        ArtError::new(code, message.to_string()).detail(json!({
+            "workspace_root": self.root,
+            "recovery": "Copy the source file to a new path inside workspace_root, verify its bytes, then retry with the relative path. Preserve the original."
+        }))
+    }
     fn input_path(&self, path: &str) -> ArtResult<PathBuf> {
         let path = Path::new(path);
         if path.is_absolute()
@@ -163,15 +169,20 @@ impl Workspace {
                 .components()
                 .any(|p| !matches!(p, Component::Normal(_) | Component::CurDir))
         {
-            return Err(invalid("Provide a relative path within the workspace"));
+            return Err(self.input_path_error(
+                "invalid_input",
+                "Provide a relative path within the workspace",
+            ));
         }
         let resolved = self
             .root
             .join(path)
             .canonicalize()
-            .map_err(|e| ArtError::new("source_unavailable", e.to_string()))?;
+            .map_err(|e| self.input_path_error("source_unavailable", e))?;
         if !resolved.starts_with(&self.root) {
-            return Err(invalid("Input path points outside the workspace"));
+            return Err(
+                self.input_path_error("invalid_input", "Input path points outside the workspace")
+            );
         }
         Ok(resolved)
     }
