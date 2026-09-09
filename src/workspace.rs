@@ -73,9 +73,18 @@ impl Workspace {
     pub fn open(root: impl AsRef<Path>) -> ArtResult<Self> {
         fs::create_dir_all(root.as_ref()).map_err(storage_error)?;
         let root = root.as_ref().canonicalize().map_err(storage_error)?;
-        // Keep stored candidates and workspace locks shared with earlier installations.
-        let directory = root.join(".retro-art");
+        // Project-local data is shared by all connections opened in this project.
+        let directory = root.join(".dotmend");
         fs::create_dir_all(&directory).map_err(storage_error)?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(directory.join(".gitignore"))
+        {
+            Ok(mut file) => file.write_all(b"*\n").map_err(storage_error)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(storage_error(error)),
+        }
         let database = Connection::open(directory.join("art.sqlite")).map_err(storage_error)?;
         database
             .busy_timeout(std::time::Duration::from_secs(5))
@@ -156,6 +165,12 @@ impl Workspace {
         insert_arts(&transaction, arts)?;
         transaction.commit().map_err(storage_error)
     }
+    fn input_path_error(&self, code: &str, message: impl std::fmt::Display) -> ArtError {
+        ArtError::new(code, message.to_string()).detail(json!({
+            "workspace_root": self.root,
+            "recovery": "Copy the source file to a new path inside workspace_root, verify its bytes, then retry with the relative path. Preserve the original."
+        }))
+    }
     fn input_path(&self, path: &str) -> ArtResult<PathBuf> {
         let path = Path::new(path);
         if path.is_absolute()
@@ -163,15 +178,20 @@ impl Workspace {
                 .components()
                 .any(|p| !matches!(p, Component::Normal(_) | Component::CurDir))
         {
-            return Err(invalid("Provide a relative path within the workspace"));
+            return Err(self.input_path_error(
+                "invalid_input",
+                "Provide a relative path within the workspace",
+            ));
         }
         let resolved = self
             .root
             .join(path)
             .canonicalize()
-            .map_err(|e| ArtError::new("source_unavailable", e.to_string()))?;
+            .map_err(|e| self.input_path_error("source_unavailable", e))?;
         if !resolved.starts_with(&self.root) {
-            return Err(invalid("Input path points outside the workspace"));
+            return Err(
+                self.input_path_error("invalid_input", "Input path points outside the workspace")
+            );
         }
         Ok(resolved)
     }
@@ -611,7 +631,7 @@ impl Workspace {
             .collect();
         files.insert("manifest.json", encode_json(&json!({"files":hashes}))?);
         let bundle_id = digest(&files["manifest.json"]);
-        let parent = self.root.join(".retro-art/exports");
+        let parent = self.root.join(".dotmend/exports");
         fs::create_dir_all(&parent).map_err(storage_error)?;
         let destination = parent.join(&bundle_id);
         if destination.exists() {
@@ -647,7 +667,7 @@ impl Workspace {
             .map(|name| format!("dotmend://exports/{bundle_id}/{name}"))
             .collect();
         Ok(ToolOutput {
-            data: json!({"ok":true,"art_id":art_id,"bundle_id":bundle_id,"bundle_path":format!(".retro-art/exports/{bundle_id}"),"files":links,"validation":validation}),
+            data: json!({"ok":true,"art_id":art_id,"bundle_id":bundle_id,"bundle_path":format!(".dotmend/exports/{bundle_id}"),"files":links,"validation":validation}),
             images: vec![],
             links,
         })
@@ -750,7 +770,7 @@ impl Workspace {
             return Err(invalid("Invalid export URI"));
         }
         Ok((
-            self.read_file(&format!(".retro-art/exports/{id}/{name}"))?,
+            self.read_file(&format!(".dotmend/exports/{id}/{name}"))?,
             if name.ends_with(".png") {
                 "image/png"
             } else {

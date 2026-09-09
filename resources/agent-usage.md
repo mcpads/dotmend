@@ -4,11 +4,17 @@ This guide is served verbatim at `dotmend://guides/editing`. Use `tools/list` fo
 
 Art coordinates start at the top-left `(0,0)`, with `+x` right and `+y` down. The right and bottom edges of `{x,y,width,height}` are exclusive. Reference images have their own source coordinates.
 
+## Project workspace
+
+Dotmend uses the project directory supplied by the client at launch, or an explicit `--workspace`. Art, sources, exports and screen records live in that project's `.dotmend/`. Sessions in the same project share these records; different projects remain independent. Input file paths are relative to the project directory. New storage creates its own `.gitignore` to keep work out of Git; existing ignore rules are preserved.
+
 ## Presenting work to a human
 
 Humans paint with palette colors, mark suspected issues, undo the last stroke once and save. Handle collections, filters, past candidates, regions and reviews through conversation and tools.
 
 When first sharing the screen, briefly explain its available controls in the user's language: choose a palette color, then click or drag to paint; **Mark issues** uses left clicks/drags to add marks and right clicks/drags to remove them; **Undo** (Ctrl/Cmd+Z) reverses the last stroke once; **Save** (Ctrl/Cmd+S) records the current result. A click or drag is one stroke, and painting and marking share the same undo. Tell the user to ask you for older results or other operations. Adapt the explanation to read-only and playback views; repeat it only if asked or needed. Do not send the user to this guide or require IDs and technical settings.
+
+For more than 20 allowed colors, the screen starts in **Mark issues** mode and shows up to 20 commonly used palette entries, including Erase when allowed. Explain this briefly in the user's language and invite them to mark areas and describe the desired change. Read saved concerns, focus the marked regions, resolve unclear intent, apply edits within the request's permissions and present the result. Keep color selection and palette details with the agent. The displayed subset stays fixed during editing; all original indices remain available to agent tools.
 
 1. Choose a fresh random `control_id` per independent task (16..128 ASCII letters, digits, underscores or hyphens); retain it across calls and connections. Call `open_workbench({control_id})` for the instance ID and URL. Do not bypass another owner or the shared limit. Read `inspect_presentation({})`; no existing view returns `presentation:null`.
 2. Call `present_art({control_id,workbench_id,view})`. Set `view.title`, `note` and `items` to describe the user's task. An art item is `{kind:"art",art_id,label,region,scale,editable,request_id?}`. Attach `request_id` to an editable item carrying out a protected request.
@@ -112,3 +118,12 @@ Preview scale is 1..64. Combined focus or frame output is at most 1048576 pixels
 Each MCP process admits at most 32 concurrent tool operations, with a burst budget of 64 replenished at 64 calls per second. A rejected call returns a tool error with code `rate_limited` and `details.retry_after_ms`; await pending work and honor that delay. Dependent edits must remain sequential.
 
 Tool execution failures return `isError:true` and matching JSON in `structuredContent` and text content. Protocol errors use JSON-RPC errors. Read `error.code` and structured details to recover; do not parse English message wording as a stable identifier. Caller-authored text and diagnostic values retain their original contents and language.
+
+
+### Import a PNG
+
+1. Inspect an existing target art, or call `create_art` with the supplied target and `initial: {"kind":"fill","index":<allowed index>}`. Palette colors use `#RRGGBB`; `transparent_index` carries transparency. Obtain missing required target conditions from the caller.
+2. Call `prepare_image` with that `target_art_id`, a workspace-relative `source_path`, and explicit crop, resize, alpha, color mapping and dither settings.
+3. Use the returned `art_id` for inspection, validation, editing and presentation. Read conversion diagnostics and verify game index identity when required.
+
+On a path error, use `details.workspace_root` to copy the file to a non-conflicting destination, verify its bytes and retry the relative path. Preserve the source. Report unavailable file access if copying cannot proceed. Keep existing images in the file workflow; reserve inline indices for caller-supplied index data and `bundle_path` for exported Dotmend art.

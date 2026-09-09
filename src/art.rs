@@ -107,6 +107,7 @@ pub struct Target {
     #[schemars(range(min = 1, max = 1024))]
     pub height: u32,
     #[schemars(length(min = 1, max = 256))]
+    /// Ordered #RRGGBB colors, including duplicates. Alpha is represented separately by transparent_index, not #RRGGBBAA.
     pub palette: Vec<String>,
     #[serde(deserialize_with = "required_nullable")]
     pub transparent_index: Option<u16>,

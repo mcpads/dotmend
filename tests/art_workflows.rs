@@ -344,7 +344,7 @@ fn a_storage_failure_rolls_back_every_candidate_in_a_set() {
     let mut args = json!({"template_art_id":first,"art_ids":[first,second],"write_region":{"x":0,"y":0,"width":1,"height":1},"operations":[{"kind":"fill_rect","rect":{"x":0,"y":0,"width":1,"height":1},"index":2}],"preview":true});
     let preview = workspace.call("edit_art_set", args.clone()).unwrap();
     // Force failure after the first INSERT has succeeded inside the real action.
-    let database = rusqlite::Connection::open(temp.path().join(".retro-art/art.sqlite")).unwrap();
+    let database = rusqlite::Connection::open(temp.path().join(".dotmend/art.sqlite")).unwrap();
     database.execute_batch("CREATE TRIGGER fail_second BEFORE INSERT ON arts WHEN NEW.resource_id='second' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;").unwrap();
     args["preview"] = json!(false);
     args["expected_plan_hash"] = preview.data["plan_hash"].clone();
@@ -429,6 +429,45 @@ fn focusing_is_read_only_and_does_not_expand_an_edit_request() {
     assert_eq!(listed_ids(&mut workspace), before);
     let edited = edit(&mut workspace, &original, 1, 1, 2);
     workspace.call("submit_edit_result",json!({"request_id":requested.data["request_id"],"result_art_id":edited,"notes":"Updated the specified pixel"})).unwrap();
+    assert_eq!(
+        workspace.load(&original).unwrap().indices,
+        vec![vec![0; 4]; 3]
+    );
+}
+
+#[test]
+fn image_path_errors_allow_recovery_by_staging_without_inline_pixels() {
+    let temp = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let mut workspace = Workspace::open(temp.path()).unwrap();
+    let original = create(&mut workspace, "file-import");
+    let bytes = encode_png(&Raster {
+        width: 4,
+        height: 3,
+        rgba: [255, 0, 0, 255].repeat(12),
+    })
+    .unwrap();
+    let source = external.path().join("input.png");
+    fs::write(&source, &bytes).unwrap();
+    let mut args = json!({"source_path":source,"target_art_id":original,"transform":{"crop":{"x":0,"y":0,"width":4,"height":3},"resize":"none","alpha":{"mode":"threshold","cutoff":128},"color_mapping":{"method":"nearest_rgb","opaque_indices":[1,2]},"dither":"none"}});
+    for path in [source.to_str().unwrap(), "input.png", "../input.png"] {
+        args["source_path"] = json!(path);
+        let error = workspace.call("prepare_image", args.clone()).err().unwrap();
+        assert_eq!(
+            error.details["workspace_root"],
+            json!(temp.path().canonicalize().unwrap())
+        );
+        assert!(error.details["recovery"].as_str().is_some());
+        assert_eq!(listed_ids(&mut workspace), vec![original.clone()]);
+    }
+    fs::copy(&source, temp.path().join("input.png")).unwrap();
+    args["source_path"] = json!("input.png");
+    let imported = workspace.call("prepare_image", args).unwrap();
+    let art = workspace
+        .load(imported.data["art_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(art.indices, vec![vec![2; 4]; 3]);
+    assert_eq!(fs::read(source).unwrap(), bytes);
     assert_eq!(
         workspace.load(&original).unwrap().indices,
         vec![vec![0; 4]; 3]

@@ -182,7 +182,7 @@ fn state_storage_failure_rolls_back_the_pixel_candidate_and_allows_retry() {
     let base = art(&mut w, "atomic");
     let view = show(&mut w, &[base]);
     let count_before = count(&mut w);
-    let db = rusqlite::Connection::open(dir.path().join(".retro-art/art.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(dir.path().join(".dotmend/art.sqlite")).unwrap();
     db.execute_batch("CREATE TRIGGER reject_view BEFORE INSERT ON presentation_states WHEN json_extract(NEW.payload,'$.action')='paint' BEGIN SELECT RAISE(FAIL,'test write failure'); END;").unwrap();
     let input = paint(&view, 2, 2);
     assert_eq!(
@@ -441,7 +441,7 @@ fn concern_state_failures_retries_and_new_presentations_preserve_the_original_ma
     let mut w = Workspace::open(dir.path()).unwrap();
     let base = art(&mut w, "atomic-marks");
     let view = show(&mut w, std::slice::from_ref(&base));
-    let db = rusqlite::Connection::open(dir.path().join(".retro-art/art.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(dir.path().join(".dotmend/art.sqlite")).unwrap();
     db.execute_batch("CREATE TRIGGER reject_mark BEFORE INSERT ON presentation_states WHEN json_extract(NEW.payload,'$.action')='mark' BEGIN SELECT RAISE(FAIL,'injected failure'); END;").unwrap();
     let input = mark(&view, 0, json!([{"x":1,"y":1}]), true);
     assert_eq!(
@@ -494,7 +494,7 @@ fn legacy_presentation_payloads_keep_their_ids_and_undo_after_marking_is_added()
         legacy["undo_art_ids"], legacy["action"]
     ).into_bytes();
     let legacy_id = format!("view_state_{}", dotmend::art::digest(&payload));
-    let db = rusqlite::Connection::open(dir.path().join(".retro-art/art.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(dir.path().join(".dotmend/art.sqlite")).unwrap();
     db.execute(
         "INSERT OR IGNORE INTO presentation_states(id,payload) VALUES (?1,?2)",
         rusqlite::params![legacy_id, payload],

@@ -12,8 +12,13 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Initial {
-    Fill { index: u16 },
-    Indices { rows: Vec<Vec<u16>> },
+    Fill {
+        index: u16,
+    },
+    /// Exact index data supplied by the caller; do not transcribe an existing image into rows. Use prepare_image for PNG files.
+    Indices {
+        rows: Vec<Vec<u16>>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -70,7 +75,9 @@ pub struct EditArtSet {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PrepareImage {
+    /// PNG path relative to the server workspace, not the agent working directory; or a stored source:<sha256> handle. External files must first be copied into the workspace.
     pub source_path: String,
+    /// Required existing art defining the target. Create a fill canvas first if needed; use the returned art_id.
     pub target_art_id: String,
     pub transform: Transform,
     pub provenance: Option<Value>,
@@ -79,6 +86,7 @@ pub struct PrepareImage {
 #[serde(deny_unknown_fields)]
 pub struct AttachReference {
     pub art_id: String,
+    /// PNG path relative to the server workspace, not the agent working directory; or a stored source:<sha256> handle. External files must first be copied into the workspace.
     pub source_path: String,
     pub label: String,
     pub role: ReferenceRole,
@@ -244,7 +252,7 @@ pub fn tool_schemas() -> Vec<(&'static str, &'static str, bool, Value)> {
         ),
         (
             "create_art",
-            "Create art with exact palette indices. Supply target with initial, or import from bundle_path.",
+            "Create a fill canvas or exact index data, or import an exported bundle_path. For existing PNGs, create a fill canvas then call prepare_image.",
             false,
             input_schema::<CreateArt>(),
         ),
@@ -262,7 +270,7 @@ pub fn tool_schemas() -> Vec<(&'static str, &'static str, bool, Value)> {
         ),
         (
             "prepare_image",
-            "Convert a local RGB/RGBA PNG to the target palette using explicit settings. Maximum input size is 16 MiB.",
+            "Convert a workspace-relative RGB/RGBA PNG using a required target_art_id and explicit settings. Follow error.details to recover from path errors. Maximum input size is 16 MiB.",
             false,
             input_schema::<PrepareImage>(),
         ),

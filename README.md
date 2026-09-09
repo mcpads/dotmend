@@ -28,7 +28,7 @@ Ask the agent to show a collection, filter the view, bring back an earlier candi
 
 Images from external generators, including Imagen, can enter the same workflow through PNG import. Generation and image conversion are explicit steps; the final artwork still needs to meet the target's constraints.
 
-Dotmend runs as a native Rust MCP server with a local browser interface. The agent manages that interface through MCP tools. Current client connections use the stateless MCP protocol `2026-07-28`.
+Dotmend runs as a native Rust MCP server with a local browser interface. Each project keeps its work in `.dotmend/`, shared by sessions working in that project. The agent manages that interface through MCP tools. Current client connections use the stateless MCP protocol `2026-07-28`.
 
 It focuses on making and modifying retro game assets. Font rendering and layer composition are planned; ROM insertion and verification inside a running game belong to the surrounding toolchain.
 
