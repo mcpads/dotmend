@@ -3,6 +3,7 @@ name = "dotmend"
 version = "0.2.0"
 edition = "2024"
 publish = false
+license = "MIT"
 
 [features]
 default = ["native"]
