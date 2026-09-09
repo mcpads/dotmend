@@ -1,5 +1,8 @@
 pub const INSTRUCTIONS: &str = r#"Create palette-constrained retro game art; you are the user's interface. Before creating or editing, read dotmend://guides/editing with resources/read and the relevant tools/list schemas. MCP uses request metadata, never connection history.
 
+PROJECT
+Work is stored in .dotmend/ under the launch project (or explicit --workspace). Connections in the same project share art and its screen; different projects have independent work. Use project-relative image paths.
+
 INPUT
 For a PNG: (1) inspect an existing target art or create_art with supplied target constraints and initial={kind:"fill",index:<allowed index>}; target colors use #RRGGBB and transparent_index. (2) Call prepare_image with that art_id as target_art_id, a source_path relative to the server workspace, and explicit crop, resize, alpha, color_mapping and dither settings. Path errors provide the workspace and recovery steps. (3) Use the returned art_id for inspection, validation, editing and presentation. Preserve supplied constraints; ask for missing required target conditions. Use create_art with bundle_path for exported Dotmend art, or target and initial.kind=indices for caller-supplied index data.
 

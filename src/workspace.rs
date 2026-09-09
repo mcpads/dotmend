@@ -73,8 +73,8 @@ impl Workspace {
     pub fn open(root: impl AsRef<Path>) -> ArtResult<Self> {
         fs::create_dir_all(root.as_ref()).map_err(storage_error)?;
         let root = root.as_ref().canonicalize().map_err(storage_error)?;
-        // Keep stored candidates and workspace locks shared with earlier installations.
-        let directory = root.join(".retro-art");
+        // Project-local data is shared by all connections opened in this project.
+        let directory = root.join(".dotmend");
         fs::create_dir_all(&directory).map_err(storage_error)?;
         let database = Connection::open(directory.join("art.sqlite")).map_err(storage_error)?;
         database
@@ -622,7 +622,7 @@ impl Workspace {
             .collect();
         files.insert("manifest.json", encode_json(&json!({"files":hashes}))?);
         let bundle_id = digest(&files["manifest.json"]);
-        let parent = self.root.join(".retro-art/exports");
+        let parent = self.root.join(".dotmend/exports");
         fs::create_dir_all(&parent).map_err(storage_error)?;
         let destination = parent.join(&bundle_id);
         if destination.exists() {
@@ -658,7 +658,7 @@ impl Workspace {
             .map(|name| format!("dotmend://exports/{bundle_id}/{name}"))
             .collect();
         Ok(ToolOutput {
-            data: json!({"ok":true,"art_id":art_id,"bundle_id":bundle_id,"bundle_path":format!(".retro-art/exports/{bundle_id}"),"files":links,"validation":validation}),
+            data: json!({"ok":true,"art_id":art_id,"bundle_id":bundle_id,"bundle_path":format!(".dotmend/exports/{bundle_id}"),"files":links,"validation":validation}),
             images: vec![],
             links,
         })
@@ -761,7 +761,7 @@ impl Workspace {
             return Err(invalid("Invalid export URI"));
         }
         Ok((
-            self.read_file(&format!(".retro-art/exports/{id}/{name}"))?,
+            self.read_file(&format!(".dotmend/exports/{id}/{name}"))?,
             if name.ends_with(".png") {
                 "image/png"
             } else {

@@ -153,12 +153,12 @@ impl Workbench {
     }
     fn descriptor(&self) -> ArtResult<Descriptor> {
         serde_json::from_slice(
-            &fs::read(self.root.join(".retro-art/workbench.json")).map_err(storage)?,
+            &fs::read(self.root.join(".dotmend/workbench.json")).map_err(storage)?,
         )
         .map_err(storage)
     }
     fn available(&self) -> ArtResult<bool> {
-        Ok(locked_file(&self.root.join(".retro-art/workbench.lock"))?.is_some())
+        Ok(locked_file(&self.root.join(".dotmend/workbench.lock"))?.is_some())
     }
     async fn forward(&self, tool: &str, arguments: serde_json::Value) -> ArtResult<ToolOutput> {
         let descriptor = self.descriptor().map_err(|_| {
@@ -247,8 +247,7 @@ impl Workbench {
                 running.finish().await;
             }
         }
-        let Some(workspace_lock) = locked_file(&self.root.join(".retro-art/workbench.lock"))?
-        else {
+        let Some(workspace_lock) = locked_file(&self.root.join(".dotmend/workbench.lock"))? else {
             return self
                 .forward(
                     "open_workbench",
@@ -296,12 +295,12 @@ impl Workbench {
             control_hash: digest(input.control_id.as_bytes()),
         };
         let mut file =
-            tempfile::NamedTempFile::new_in(self.root.join(".retro-art")).map_err(storage)?;
+            tempfile::NamedTempFile::new_in(self.root.join(".dotmend")).map_err(storage)?;
         use std::io::Write;
         file.write_all(&serde_json::to_vec(&descriptor).map_err(storage)?)
             .map_err(storage)?;
         file.as_file().sync_all().map_err(storage)?;
-        file.persist(self.root.join(".retro-art/workbench.json"))
+        file.persist(self.root.join(".dotmend/workbench.json"))
             .map_err(storage)?;
         let access = Arc::new(WorkbenchAccess {
             control_id: input.control_id,

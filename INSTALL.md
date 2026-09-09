@@ -1,10 +1,10 @@
 # Install Dotmend for the user
 
-This file is for the agent performing installation. Handle setup and verification yourself. Ask the user only for information or access that you cannot obtain, such as their intended asset workspace. Do not turn these steps into a checklist for the human.
+This file is for the agent performing installation. Handle setup and verification yourself. Ask the user only for information or access that you cannot obtain. Do not turn these steps into a checklist for the human.
 
 ## Choose the release
 
-1. Inspect the host OS, CPU architecture, existing Dotmend installation, and the user's MCP client. Preserve existing configuration and workspaces. Use a writable, persistent asset workspace; never use the installation directory as the workspace.
+1. Inspect the host OS, CPU architecture, existing Dotmend installation, and the user's MCP client. Preserve existing configuration and workspaces. Each project stores its work in .dotmend/ under the project directory.
 2. Read the latest published release from `https://api.github.com/repos/mcpads/dotmend/releases/latest` (or use `gh release view --repo mcpads/dotmend`). Pin its tag and asset URLs for the entire installation. Do not install a draft or build from `next` unless the user requests development source.
 3. Download the matching archive and `SHA256SUMS` from that same release. Compute SHA-256 locally and require an exact match for the archive filename before extracting or executing it. A checksum detects corrupted or mismatched downloads; it is not a code signature.
 
@@ -23,9 +23,11 @@ Extract into a temporary directory, then place `dotmend` (Windows: `dotmend.exe`
 Run the executable with `--version` and check that it matches the selected release tag without its leading `v`. Register one MCP stdio server named `dotmend`, using the client's supported configuration mechanism:
 
 - **Command:** the absolute path of the installed executable.
-- **Arguments:** `--workspace` followed by the absolute path of the asset workspace, as separate arguments.
+- **Arguments:** none for a user-wide registration. The client must launch the executable in the current project directory. For a project-scoped registration, `--workspace` may explicitly select that project.
 - **Transport:** stdio; keep stdout exclusively for JSON-RPC.
 - **Protocol:** stateless MCP `2026-07-28`. The client must support this protocol and supply its required per-request metadata. A client that only sends `initialize` cannot connect. Check the installed client's help and current official documentation for any required feature settings; do not guess configuration keys or silently downgrade the protocol.
+
+Verify the client uses each session's project directory by opening two temporary projects: each must create its own `.dotmend/` and discover only its own art. Sessions in the same project share stored work. Keep the user-wide entry free of a fixed workspace or cwd.
 
 Merge the entry into existing configuration without removing other servers. Reuse an existing entry for this installation instead of accumulating duplicate registrations. Reconnect the MCP client after changing the executable or configuration. If the client cannot support the required protocol, report that specific limitation and leave its other servers intact.
 

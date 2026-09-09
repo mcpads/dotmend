@@ -6,3 +6,5 @@
 /playwright-report/
 /dist/
 __pycache__/
+
+/.dotmend/

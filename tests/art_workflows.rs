@@ -344,7 +344,7 @@ fn a_storage_failure_rolls_back_every_candidate_in_a_set() {
     let mut args = json!({"template_art_id":first,"art_ids":[first,second],"write_region":{"x":0,"y":0,"width":1,"height":1},"operations":[{"kind":"fill_rect","rect":{"x":0,"y":0,"width":1,"height":1},"index":2}],"preview":true});
     let preview = workspace.call("edit_art_set", args.clone()).unwrap();
     // Force failure after the first INSERT has succeeded inside the real action.
-    let database = rusqlite::Connection::open(temp.path().join(".retro-art/art.sqlite")).unwrap();
+    let database = rusqlite::Connection::open(temp.path().join(".dotmend/art.sqlite")).unwrap();
     database.execute_batch("CREATE TRIGGER fail_second BEFORE INSERT ON arts WHEN NEW.resource_id='second' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;").unwrap();
     args["preview"] = json!(false);
     args["expected_plan_hash"] = preview.data["plan_hash"].clone();

@@ -396,7 +396,7 @@ fn failed_review_transaction_rolls_back_its_followup_and_allows_retry() {
         "submit_edit_result",
         json!({"request_id":req,"result_art_id":base,"notes":""}),
     );
-    let db = rusqlite::Connection::open(temp.path().join(".retro-art/art.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(temp.path().join(".dotmend/art.sqlite")).unwrap();
     db.execute_batch("CREATE TRIGGER reject_review BEFORE INSERT ON edit_reviews BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
     let input = json!({"request_id":req,"result_art_id":base,"decision":"changes_requested","notes":"Try again","regions":[],"expected_review_id":null,"follow_up":{"base_art_id":base,"write_region":all(),"instruction":"Follow-up"}});
     assert_eq!(
@@ -502,7 +502,7 @@ fn opening_legacy_storage_preserves_candidate_and_request_payloads_and_ids() {
     let base = blank(&mut w, "legacy");
     let req = request(&mut w, &base, &[]);
     drop(w);
-    let db = rusqlite::Connection::open(temp.path().join(".retro-art/art.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(temp.path().join(".dotmend/art.sqlite")).unwrap();
     let bytes: Vec<u8> = db
         .query_row(
             "SELECT payload FROM edit_requests WHERE id=?1",
@@ -522,7 +522,7 @@ fn opening_legacy_storage_preserves_candidate_and_request_payloads_and_ids() {
     assert_eq!(inspect(&mut w, &req)["request"]["base_art_id"], base);
     assert_eq!(w.load(&base).unwrap().id().unwrap(), base);
     assert_eq!(request(&mut w, &base, &[]), req);
-    let db = rusqlite::Connection::open(temp.path().join(".retro-art/art.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(temp.path().join(".dotmend/art.sqlite")).unwrap();
     let after: Vec<u8> = db
         .query_row(
             "SELECT payload FROM edit_requests WHERE id=?1",

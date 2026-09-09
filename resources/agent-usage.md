@@ -4,6 +4,10 @@ This guide is served verbatim at `dotmend://guides/editing`. Use `tools/list` fo
 
 Art coordinates start at the top-left `(0,0)`, with `+x` right and `+y` down. The right and bottom edges of `{x,y,width,height}` are exclusive. Reference images have their own source coordinates.
 
+## Project workspace
+
+Dotmend uses the project directory supplied by the client at launch, or an explicit `--workspace`. Art, sources, exports and screen records live in that project's `.dotmend/`. Sessions in the same project share these records; different projects remain independent. Input file paths are relative to the project directory.
+
 ## Presenting work to a human
 
 Humans paint with palette colors, mark suspected issues, undo the last stroke once and save. Handle collections, filters, past candidates, regions and reviews through conversation and tools.

@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "dotmend [--workspace PATH] [--version]\nMCP stdio server. Open the human screen with open_workbench; no standalone web process."
+                    "dotmend [--workspace PATH] [--version]\nMCP stdio server. Uses the launch directory as the project and stores work in .dotmend/. --workspace selects an explicit project. Open the human screen with open_workbench."
                 );
                 return Ok(());
             }
