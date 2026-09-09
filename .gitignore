@@ -5,6 +5,7 @@
 /test-results/
 /playwright-report/
 /dist/
+/out/
 __pycache__/
 
 /.dotmend/
