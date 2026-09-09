@@ -1,6 +1,19 @@
 "use strict";
 const $=id=>document.getElementById(id);
-const state={workbenchId:null,view:null,arts:new Map(),sources:new Map(),colors:new Map(),marking:false,stroke:null,busy:false,refresh:0,polling:false,timers:new Set()};
+const state={workbenchId:null,view:null,arts:new Map(),sources:new Map(),colors:new Map(),paletteChoices:new Map(),marking:false,stroke:null,busy:false,refresh:0,polling:false,timers:new Set()};
+const MAX_VISIBLE_COLORS=20;
+function visibleColors(art,region){
+  const allowed=art.target.allowed_indices;
+  if(allowed.length<=MAX_VISIBLE_COLORS)return [...allowed];
+  const counts=new Map(allowed.map(index=>[index,0]));
+  for(let y=region.y;y<region.y+region.height;y++)for(let x=region.x;x<region.x+region.width;x++){
+    const index=art.indices[y][x];if(counts.has(index))counts.set(index,counts.get(index)+1);
+  }
+  const transparent=art.target.transparent_index;
+  const erase=allowed.includes(transparent)?[transparent]:[];
+  const ranked=allowed.filter(index=>index!==transparent).sort((a,b)=>counts.get(b)-counts.get(a));
+  return [...erase,...ranked.slice(0,MAX_VISIBLE_COLORS-erase.length)];
+}
 function status(text,error=false){$("status").textContent=text;$("status").classList.toggle("error",error);}
 async function json(url,options){const response=await fetch(url,{cache:"no-store",...options,headers:{...options?.headers,...(state.workbenchId?{"x-retro-art-workbench":state.workbenchId}:{})}});const data=await response.json();if(!response.ok||data.ok===false){const error=new Error(data.error?.message||"Please check your connection.");error.code=data.error?.code;throw error;}return data;}
 function loadArt(id){if(!state.arts.has(id))state.arts.set(id,json(`/api/art/${id}`).catch(error=>{state.arts.delete(id);throw error;}));return state.arts.get(id);}
@@ -84,14 +97,16 @@ async function display(view,force=false){
   if(!view){stopAnimations();state.view=null;$("pictures").replaceChildren();$("title").textContent="Waiting for artwork.";$("note").textContent="Tell your agent what you want to see.";$("note").hidden=false;$("hint").hidden=true;controls();return;}
   const assets=await Promise.all(view.presentation.items.map((item,i)=>item.playback?loadAnimation(item):item.kind==="art"?loadArt(view.state.art_ids[i]):loadSource(item.source_hash)));
   if(token!==state.refresh||state.busy||state.stroke)return;
-  stopAnimations();if(state.view?.presentation_id!==view.presentation_id){state.colors.clear();state.marking=false;}state.view=view;
+  stopAnimations();if(state.view?.presentation_id!==view.presentation_id){state.colors.clear();state.paletteChoices.clear();state.marking=view.presentation.items.some((item,index)=>markable(item)&&assets[index].target.allowed_indices.length>MAX_VISIBLE_COLORS);}state.view=view;
   $("title").textContent=view.presentation.title;$("note").textContent=view.presentation.note;$("note").hidden=!view.presentation.note;$("hint").hidden=!editable();$("pictures").replaceChildren();
   view.presentation.items.forEach((item,index)=>{
     const figure=document.createElement("figure");figure.className="picture";figure.dataset.item=String(index);const caption=document.createElement("figcaption");caption.textContent=item.label;const well=document.createElement("div");well.className="drawing";const canvas=document.createElement("canvas");canvas.width=item.region.width*item.scale;canvas.height=item.region.height*item.scale;canvas.setAttribute("aria-label",item.label);well.append(canvas);figure.append(caption,well);
     if(item.playback){animate(canvas,assets[index]);}
     else if(item.kind==="reference"){const ctx=canvas.getContext("2d"),r=item.region;ctx.imageSmoothingEnabled=false;checker(ctx,r.width,r.height,item.scale);ctx.drawImage(assets[index],r.x,r.y,r.width,r.height,0,0,canvas.width,canvas.height);}
     else {const art=assets[index];canvas.className=item.editable?"editable markable":"markable";draw(canvas,item,art,index);attachBrush(canvas,item,index,art);if(item.editable){const palette=document.createElement("div");palette.className="palette";palette.setAttribute("role","group");palette.setAttribute("aria-label",`${item.label} colors`);
-      for(const color of art.target.allowed_indices){const swatch=document.createElement("button");swatch.className="swatch";swatch.dataset.index=String(color);swatch.dataset.item=String(index);const transparent=color===art.target.transparent_index;if(transparent)swatch.classList.add("transparent");else swatch.style.backgroundColor=art.target.palette[color];swatch.title=transparent?"Erase":art.target.palette[color];swatch.setAttribute("aria-label",transparent?"Erase":`Color ${art.target.palette[color]} · ${color+1}`);swatch.setAttribute("aria-pressed",String(state.colors.get(index)===color));swatch.onclick=()=>{state.colors.set(index,color);state.marking=false;controls();status("Click the pixels you want to change.");};palette.append(swatch);}figure.append(palette);
+      if(!state.paletteChoices.has(index))state.paletteChoices.set(index,visibleColors(art,item.region));
+      for(const color of state.paletteChoices.get(index)){const swatch=document.createElement("button");swatch.className="swatch";swatch.dataset.index=String(color);swatch.dataset.item=String(index);const transparent=color===art.target.transparent_index;if(transparent)swatch.classList.add("transparent");else swatch.style.backgroundColor=art.target.palette[color];swatch.title=transparent?"Erase":art.target.palette[color];swatch.setAttribute("aria-label",transparent?"Erase":`Color ${art.target.palette[color]} · ${color+1}`);swatch.setAttribute("aria-pressed",String(state.colors.get(index)===color));swatch.onclick=()=>{state.colors.set(index,color);state.marking=false;controls();status("Click the pixels you want to change.");};palette.append(swatch);}figure.append(palette);
+      if(art.target.allowed_indices.length>MAX_VISIBLE_COLORS){const note=document.createElement("p");note.textContent="Showing up to 20 common colors. Mark areas to change and ask your agent to edit them.";figure.append(note);}
     }}$("pictures").append(figure);
   });controls();status((editable()||canMark())?(view.dirty?"Click Save when you are ready.":"Saved."):"");
 }

@@ -405,3 +405,34 @@ test("canceling a marking stroke removes its preview without storing pixels",asy
   await expect(page.locator("#mark")).toBeEnabled();expect(await marks(workbench.client)).toEqual([]);
   expect(await canvas.evaluate(c=>Array.from(c.getContext("2d").getImageData(48,48,1,1).data))).toEqual(before);expect(await result(workbench.client)).toBe(id);
 });
+
+test("large palettes prioritize issue marks and keep twenty stable original indices",async({page,workbench})=>{
+  const client=workbench.client;
+  const palette=Array.from({length:32},(_,i)=>`#${(i*8).toString(16).padStart(2,"0").repeat(3)}`);
+  palette[31]=palette[30];
+  const pixels=[...Array(32).fill(31),...Array(9).fill(30),...Array.from({length:23},(_,i)=>i+1)];
+  const created=(await client.tool("create_art",{target:{resource_id:"many-colors",width:8,height:8,palette,transparent_index:0,allowed_indices:Array.from({length:32},(_,i)=>i),constraints_ref:null,requirements:[]},initial:{kind:"indices",rows:Array.from({length:8},(_,y)=>pixels.slice(y*8,y*8+8))}})).structuredContent;
+  expect(created.ok).toBe(true);
+  await show(client,[created.art_id]);await settle(page);
+  const choices=()=>page.locator('.palette .swatch').evaluateAll(nodes=>nodes.map(n=>Number(n.dataset.index)));
+  const expected=[0,31,30,...Array.from({length:17},(_,i)=>i+1)];
+  expect(await choices()).toEqual(expected);
+  await expect(page.locator('#mark')).toHaveAttribute('aria-pressed','true');
+  await expect(page.getByText('Showing up to 20 common colors. Mark areas to change and ask your agent to edit them.')).toBeVisible();
+  await point(page,1,1);
+  await expect.poll(async()=>(await inspect(client)).state.concerns?.[0]?.pixels).toEqual([{x:1,y:1}]);
+  expect(await result(client)).toBe(created.art_id);
+  await page.locator('.palette [data-index="17"]').click();
+  await expect(page.locator('#mark')).toHaveAttribute('aria-pressed','false');
+  for(let x=0;x<8;x++){await point(page,x,0);await expect.poll(async()=>(await rows(client,await result(client)))[0][x]).toBe(17);}
+  expect(await choices()).toEqual(expected);
+  const modified=(await client.tool('inspect_art',{art_id:await result(client),include_indices:true})).structuredContent;
+  expect(modified.target.palette).toEqual(palette);
+  expect(modified.target.allowed_indices).toEqual(Array.from({length:32},(_,i)=>i));
+  await page.locator('#undo').click();await expect.poll(async()=>(await rows(client,await result(client)))[0][7]).toBe(31);
+  expect(await choices()).toEqual(expected);
+  await page.locator('#save').click();await expect(page.locator('#status')).toHaveText('Saved.');
+  expect(await choices()).toEqual(expected);
+  await show(client,[created.art_id],{items:[{kind:'art',art_id:created.art_id,label:'Small crop',region:{x:1,y:5,width:7,height:1},scale:32,editable:true}]});
+  await expect.poll(async()=>(await choices()).slice(0,8)).toEqual([0,1,2,3,4,5,6,7]);
+});
