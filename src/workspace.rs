@@ -76,6 +76,15 @@ impl Workspace {
         // Project-local data is shared by all connections opened in this project.
         let directory = root.join(".dotmend");
         fs::create_dir_all(&directory).map_err(storage_error)?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(directory.join(".gitignore"))
+        {
+            Ok(mut file) => file.write_all(b"*\n").map_err(storage_error)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(storage_error(error)),
+        }
         let database = Connection::open(directory.join("art.sqlite")).map_err(storage_error)?;
         database
             .busy_timeout(std::time::Duration::from_secs(5))

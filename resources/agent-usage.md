@@ -6,7 +6,7 @@ Art coordinates start at the top-left `(0,0)`, with `+x` right and `+y` down. Th
 
 ## Project workspace
 
-Dotmend uses the project directory supplied by the client at launch, or an explicit `--workspace`. Art, sources, exports and screen records live in that project's `.dotmend/`. Sessions in the same project share these records; different projects remain independent. Input file paths are relative to the project directory.
+Dotmend uses the project directory supplied by the client at launch, or an explicit `--workspace`. Art, sources, exports and screen records live in that project's `.dotmend/`. Sessions in the same project share these records; different projects remain independent. Input file paths are relative to the project directory. New storage creates its own `.gitignore` to keep work out of Git; existing ignore rules are preserved.
 
 ## Presenting work to a human
 

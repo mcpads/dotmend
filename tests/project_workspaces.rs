@@ -85,3 +85,57 @@ fn launch_directory_isolates_projects_and_shares_records_on_reconnect() {
     let mut resumed = Client::open(first.path());
     assert_eq!(resumed.call("list_art", json!({}))["arts"][0]["art_id"], id);
 }
+
+#[test]
+fn project_storage_is_ignored_without_changing_existing_ignore_rules() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    std::fs::create_dir(&root).unwrap();
+    let excludes = temp.path().join("global-ignore");
+    std::fs::write(&excludes, "").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q", "--template="])
+            .arg(&root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(root.join(".gitignore"), "/build/\n").unwrap();
+    let ignored = |path: &str| {
+        Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .arg("-c")
+            .arg(format!("core.excludesFile={}", excludes.display()))
+            .args(["check-ignore", "-q", path])
+            .status()
+            .unwrap()
+            .success()
+    };
+    let mut client = Client::open(&root);
+    assert_eq!(client.call("list_art", json!({}))["ok"], true);
+    for path in [
+        ".dotmend/art.sqlite",
+        ".dotmend/art.sqlite-wal",
+        ".dotmend/exports/preview.png",
+        ".dotmend/workbench.json",
+        ".dotmend/.gitignore",
+    ] {
+        assert!(ignored(path), "Storage is exposed to Git: {path}");
+    }
+    assert!(!ignored("input.png"));
+    assert_eq!(
+        std::fs::read_to_string(root.join(".gitignore")).unwrap(),
+        "/build/\n"
+    );
+    drop(client);
+    let custom = "# Project choice\n*\n";
+    std::fs::write(root.join(".dotmend/.gitignore"), custom).unwrap();
+    let mut resumed = Client::open(&root);
+    assert_eq!(resumed.call("list_art", json!({}))["ok"], true);
+    assert_eq!(
+        std::fs::read_to_string(root.join(".dotmend/.gitignore")).unwrap(),
+        custom
+    );
+}
