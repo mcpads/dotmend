@@ -39,3 +39,7 @@ Give your agent this repository and ask:
 > Install Dotmend from https://github.com/mcpads/dotmend. Follow `INSTALL.md`, connect it to my MCP client, and verify that it works. Then help me open an asset to edit.
 
 Your agent handles the download, setup, and connection checks. Releases provide native builds for Windows, macOS, and Linux. You do not need to build the app or run terminal commands yourself.
+
+## License
+
+[MIT](LICENSE) © 2026 mcpads.

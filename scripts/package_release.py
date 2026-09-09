@@ -22,9 +22,11 @@ def package(target):
     if windows:
         with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
             bundle.write(binary, name)
+            bundle.write("LICENSE", "LICENSE")
     else:
         with tarfile.open(archive, "w:gz") as bundle:
             bundle.add(binary, arcname=name)
+            bundle.add("LICENSE", arcname="LICENSE")
     with tempfile.TemporaryDirectory(prefix="dotmend-package-") as directory:
         if windows:
             with zipfile.ZipFile(archive) as bundle:

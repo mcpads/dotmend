@@ -1,6 +1,7 @@
 {
   "name": "dotmend-ui-tests",
   "private": true,
+  "license": "MIT",
   "engines": { "node": ">=20" },
   "scripts": { "pretest:ui": "cargo build --locked", "test:ui": "playwright test" },
   "devDependencies": { "@playwright/test": "1.63.0" }
