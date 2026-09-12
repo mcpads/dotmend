@@ -96,6 +96,7 @@ impl Workspace {
                 state_id: saved_id,
                 art_ids: state.art_ids,
                 concerns: state.concerns,
+                chosen_candidates: state.chosen_candidates,
             })
         } else {
             None
@@ -133,6 +134,28 @@ impl Workspace {
             || input.items.len() > MAX_SET_SIZE
         {
             return Err(invalid("Provide a presentation title and 1..16 items"));
+        }
+        if let Some(choices) = &input.candidate_choices {
+            if !(2..=MAX_SET_SIZE).contains(&choices.item_indices.len()) {
+                return Err(invalid("Offer 2..16 distinct candidate choices"));
+            }
+            let mut candidates = BTreeSet::new();
+            for index in &choices.item_indices {
+                let Some(PresentationItem::Art {
+                    art_id,
+                    editable: false,
+                    playback: None,
+                    ..
+                }) = input.items.get(*index)
+                else {
+                    return Err(invalid(
+                        "Candidate choices must refer to static, read-only art items",
+                    ));
+                };
+                if !candidates.insert(art_id) {
+                    return Err(invalid("Offer each candidate only once"));
+                }
+            }
         }
         let mut pixels = 0u64;
         let mut editable = BTreeSet::new();
@@ -221,6 +244,7 @@ impl Workspace {
             action: PresentationActionKind::Open,
             concerns: vec![],
             undo_concerns: None,
+            chosen_candidates: vec![],
         };
         let transaction = self
             .database
@@ -254,6 +278,25 @@ impl Workspace {
             state_id: None,
         })
     }
+    pub fn recover_human_action(&self, input: &HumanAction) -> ArtResult<ToolOutput> {
+        let command_id = identity("view_action", input)?;
+        let completed: Option<String> = self
+            .database
+            .query_row(
+                "SELECT state_id FROM presentation_actions WHERE id=?1",
+                [&command_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        let mut output = if let Some(state_id) = &completed {
+            self.action_receipt(state_id.clone(), matches!(input, HumanAction::Save { .. }))?
+        } else {
+            self.inspect_presentation(InspectPresentation::default())?
+        };
+        output.data["completed"] = json!(completed.is_some());
+        Ok(output)
+    }
     pub fn human_action(&mut self, input: HumanAction) -> ArtResult<ToolOutput> {
         let (presentation_id, expected_state_id) = input.identity();
         let command_id = identity("view_action", &input)?;
@@ -274,6 +317,38 @@ impl Workspace {
         let mut arts = vec![];
         let save = matches!(input, HumanAction::Save { .. });
         match &input {
+            HumanAction::Choose { item_indices, .. } => {
+                let choices = snapshot
+                    .presentation
+                    .candidate_choices
+                    .as_ref()
+                    .ok_or_else(|| invalid("This presentation does not offer candidate choices"))?;
+                if item_indices.len() > choices.item_indices.len() {
+                    return Err(invalid(
+                        "The choice exceeds the number of candidates allowed by this presentation",
+                    ));
+                }
+                let mut indices = BTreeSet::new();
+                for index in item_indices {
+                    if !choices.item_indices.contains(index) || !indices.insert(*index) {
+                        return Err(invalid(
+                            "Choose only distinct candidates offered by this presentation",
+                        ));
+                    }
+                }
+                let chosen: Vec<_> = indices
+                    .into_iter()
+                    .map(|item_index| ChosenCandidate {
+                        item_index,
+                        art_id: state.art_ids[item_index].clone(),
+                    })
+                    .collect();
+                if chosen != state.chosen_candidates {
+                    state.chosen_candidates = chosen;
+                    state.previous_state_id = Some(expected_state_id.into());
+                    state.action = PresentationActionKind::Choose;
+                }
+            }
             HumanAction::Mark {
                 item_index,
                 pixels,
@@ -440,6 +515,7 @@ impl Workspace {
                     state_id: state_id.clone(),
                     art_ids: state.art_ids,
                     concerns: state.concerns,
+                    chosen_candidates: state.chosen_candidates,
                 };
                 transaction
                     .execute(

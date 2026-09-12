@@ -15,6 +15,8 @@ When a detail needs your touch, the screen has four actions:
 
 Marks are saved separately from the artwork so your agent can inspect the exact locations.
 
+When your agent offers alternatives, click **Choose** under any candidates you want to explore, then **Save**. You can choose several, or click a chosen option again to remove it. Your agent can refine those choices and bring back another set. Earlier candidates remain available.
+
 Ask the agent to show a collection, filter the view, bring back an earlier candidate, or work on a particular area. You do not need to learn an editor to do that.
 
 ## What it supports

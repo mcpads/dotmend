@@ -174,7 +174,7 @@ pub fn tool_schemas() -> Vec<(&'static str, &'static str, bool, Value)> {
     vec![
         (
             "open_workbench",
-            "Open a managed human workbench with an explicit control_id (fresh random ID per task, 16..128 ASCII letters/digits/_/-). Reuse the same ID across calls or MCP connections. Other controllers and the shared limit prevent launch. Optional idle_timeout_seconds: 1..1800; default 1800. Reopening renews activity without changing the existing timeout.",
+            "Open or resume a managed workbench with an explicit control_id (fresh random ID per task, 16..128 ASCII letters/digits/_/-). Set work_state: working before agent work, including lengthy external calls; it prevents idle shutdown until you explicitly switch to waiting or close. Set waiting at handoff, when awaiting user input, or after interruption; use that response's URL, never a cached address. Omitted state preserves an active state, or starts a new instance waiting. Same control_id works across connections. Other tasks' art calls do not renew activity. Reopening resets idle time and keeps the active ID, URL and timeout. Optional idle_timeout_seconds: 1..1800, default 1800. Only the owner can change state; host exit and the shared limit still apply.",
             false,
             input_schema::<OpenWorkbench>(),
         ),
@@ -192,13 +192,13 @@ pub fn tool_schemas() -> Vec<(&'static str, &'static str, bool, Value)> {
         ),
         (
             "present_art",
-            "Present art through a managed workbench. Pass its control_id and the exact workbench_id from open_workbench and a view containing title, items and the expected presentation/state IDs from inspect_presentation. Both expected IDs must be explicit null for the first view. Humans paint, mark issues, undo once and save.",
+            "Present art through a managed workbench. Pass its control_id and the exact workbench_id from open_workbench and a view containing title, items and the expected presentation/state IDs from inspect_presentation. Both expected IDs must be explicit null for the first view. Optionally set view.candidate_choices={item_indices:[...]} to offer 2..16 distinct static, read-only art items for the human to choose from. Multiple choices are allowed. Humans can also paint editable items, mark issues, undo one stroke and save.",
             false,
             input_schema::<ManagedPresentArt>(),
         ),
         (
             "inspect_presentation",
-            "Read the current or archived presentation, human drafts and explicitly saved candidates. state.concerns and saved.concerns contain item_index, art_id, bounds and exact pixels marked by the human; absent means empty. Marks indicate observation, not edit permission or rejection. Use state_id for past states; prepare history and filters yourself with present_art.",
+            "Read the current or archived presentation, human drafts and explicitly saved candidates. state.chosen_candidates and saved.chosen_candidates contain {item_index,art_id} for the human's draft or saved choices; absent means empty. Continue from saved choices, preserving the unchosen candidates. Choosing is a preference for further work, not final acceptance or rejection. state.concerns and saved.concerns contain item_index, art_id, bounds and exact marked pixels; absent means empty. Marks request observation, not edit permission. Use state_id for past states; prepare history and filters yourself with present_art.",
             true,
             input_schema::<InspectPresentation>(),
         ),

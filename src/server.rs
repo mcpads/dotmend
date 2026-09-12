@@ -252,7 +252,12 @@ async fn tool_call(State(state): State<WebState>, Json(request): Json<ToolCall>)
         Err(error) => failure(error),
     }
 }
-async fn presentation(State(state): State<WebState>) -> Response {
+async fn presentation(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    if let Some(id) = headers.get("x-retro-art-workbench")
+        && let Err(error) = state.access.check_instance(id.to_str().unwrap_or(""))
+    {
+        return failure(error);
+    }
     match state
         .workspace
         .lock()
@@ -273,20 +278,56 @@ async fn human_action(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("")
         .to_owned();
+    let action_id = headers
+        .get("x-dotmend-action")
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_owned);
     let result = tokio::task::spawn_blocking(move || {
-        state.access.apply(&id, || {
-            state
-                .workspace
-                .lock()
-                .map_err(|_| ArtError::new("storage_error", "Failed to acquire lock"))
-                .and_then(|mut w| w.human_action(input))
-        })
+        state
+            .access
+            .human_action(&id, action_id.as_deref(), input, false, state.workspace)
     })
     .await;
     match result {
         Ok(Ok(output)) => Json(output.data).into_response(),
         Ok(Err(error)) => failure(error),
         Err(error) => failure(ArtError::new("storage_error", error.to_string())),
+    }
+}
+async fn recover_action(
+    State(state): State<WebState>,
+    headers: HeaderMap,
+    Json(input): Json<dotmend::presentation::HumanAction>,
+) -> Response {
+    let id = headers
+        .get("x-retro-art-workbench")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let action_id = headers
+        .get("x-dotmend-action")
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_owned);
+    match tokio::task::spawn_blocking(move || {
+        state
+            .access
+            .human_action(&id, action_id.as_deref(), input, true, state.workspace)
+    })
+    .await
+    {
+        Ok(Ok(output)) => Json(output.data).into_response(),
+        Ok(Err(error)) => failure(error),
+        Err(error) => failure(ArtError::new("storage_error", error.to_string())),
+    }
+}
+async fn human_activity(State(state): State<WebState>, headers: HeaderMap) -> Response {
+    let id = headers
+        .get("x-retro-art-workbench")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    match state.access.apply(id, || Ok(())) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(error) => failure(error),
     }
 }
 async fn art_data(State(state): State<WebState>, Path(id): Path<String>) -> Response {
@@ -372,7 +413,7 @@ async fn control_call(
                 if !(1..=DEFAULT_IDLE_SECONDS).contains(&idle) {
                     return Err(invalid("idle_timeout_seconds must be 1..1800"));
                 }
-                state.access.reopen(&input.control_id)
+                state.access.reopen(&input.control_id, input.work_state)
             }
             "inspect_workbench" => {
                 let input: InspectWorkbench = decode(request.arguments)?;
@@ -438,6 +479,7 @@ pub(crate) fn web_router(
             "/api/workbench",
             get(|State(state): State<WebState>| async move { Json(state.access.instance.clone()) }),
         )
+        .route("/api/workbench/activity", post(human_activity))
         .route(
             "/",
             get(|| async { Html(include_str!("../web/index.html")) }),
@@ -462,6 +504,7 @@ pub(crate) fn web_router(
         )
         .route("/api/presentation", get(presentation))
         .route("/api/presentation/action", post(human_action))
+        .route("/api/presentation/recover", post(recover_action))
         .route("/api/call", post(tool_call))
         .route("/api/art/{id}", get(art_data))
         .route("/api/art/{id}/image", get(art_image))
