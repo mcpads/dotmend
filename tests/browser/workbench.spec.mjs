@@ -8,6 +8,8 @@ import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
 
 const binary = resolve(process.env.DOTMEND_TEST_BINARY || `target/debug/dotmend${process.platform === "win32" ? ".exe" : ""}`);
+// Recovery can require a request deadline followed by another poll.
+const recoveryTimeout = 12000;
 function mcpClient(workspace, runtimeDirectory=join(workspace,"runtime"), perRequestMetadata=true) {
   const child = spawn(binary, ["--workspace", workspace], { stdio: ["pipe", "pipe", "pipe"], env:{...process.env,DOTMEND_RUNTIME_DIR:runtimeDirectory} });
   const controlId = randomUUID();
@@ -96,11 +98,18 @@ test("a stale browser action cannot write onto an agent's new presentation",asyn
   await page.route("**/api/presentation/action",async route=>{reached();await blocked;await route.continue();});
   await point(page,1,1);await entered;await show(workbench.client,[b],{title:"Another image"});release();await settle(page,"Another image");await expect(page.locator("#status")).toContainText("New artwork has arrived");expect((await rows(workbench.client,a))[1][1]).toBe(0);expect((await rows(workbench.client,b))[1][1]).toBe(0);
 });
-test("a lost save response is recovered without inventing a new result",async({page,workbench})=>{
+for(const stalledLookup of [false,true])test(`a lost save response is recovered ${stalledLookup?"after a stalled connection check":"without inventing a new result"}`,async({page,workbench})=>{
   const a=await create(workbench.client,"save");await show(workbench.client,[a]);await settle(page);await color(page);await point(page,1,1);await expect.poll(()=>result(workbench.client)).not.toBe(a);const painted=await result(workbench.client);
-  await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});await page.locator("#save").click();await expect.poll(async()=>(await inspect(workbench.client)).saved?.art_ids[0]).toBe(painted);
-  await expect(page.locator("#status")).toHaveText("Saved.");
-  await page.reload();await settle(page);await expect(page.locator("#status")).toHaveText("Saved.");await expect(page.locator("#save")).toBeDisabled();expect(await result(workbench.client)).toBe(painted);
+  await expect(page.locator("#undo")).toBeEnabled();
+  let release;const blocked=new Promise(resolve=>release=resolve);
+  if(stalledLookup)await page.route("**/api/workbench",async route=>{await blocked;await route.abort().catch(()=>{});},{times:1});
+  let saves=0;page.on("request",request=>{if(request.url().endsWith("/api/presentation/action"))saves++;});
+  try{
+    await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});await page.locator("#save").click();await expect.poll(async()=>(await inspect(workbench.client)).saved?.art_ids[0]).toBe(painted);
+    await expect(page.locator("#status")).toHaveText("Saved.",{timeout:recoveryTimeout});
+    expect(saves).toBe(1);await expect(page.locator("#mark")).toBeEnabled();
+    await page.reload();await settle(page);await expect(page.locator("#status")).toHaveText("Saved.");await expect(page.locator("#save")).toBeDisabled();expect(await result(workbench.client)).toBe(painted);
+  }finally{release();}
 });
 test("the agent records a user's explicit feedback while save alone does not approve art",async({page,workbench})=>{
   const id=await create(workbench.client,"review");const request=(await workbench.client.tool("request_edit",{base_art_id:id,write_region:{x:0,y:0,width:8,height:8},instruction:"For human review"})).structuredContent;
@@ -331,7 +340,7 @@ test("a stalled committed save recovers without reloading or replaying it",async
   try{
     await page.locator("#save").click();await expect.poll(()=>page.evaluate(()=>window.delayedSave.ready)).toBe(true);
     const saved=(await inspect(workbench.client)).saved;
-    await expect(page.locator("#status")).toHaveText("Saved.",{timeout:12000});
+    await expect(page.locator("#status")).toHaveText("Saved.",{timeout:recoveryTimeout});
     await expect(page.locator("#mark")).toBeEnabled();expect(requests).toBe(1);
     await point(page,2,1);await expect.poll(()=>result(workbench.client)).not.toBe(saved.art_ids[0]);
     await expect(page.locator("#status")).toHaveText("Click Save when you are ready.");
@@ -355,7 +364,8 @@ for(const lostResponse of [false,true])test(`a ${lostResponse?"recovered":"confi
   });
   if(lostResponse)await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});
   await point(page,1,1);await expect.poll(()=>result(workbench.client)).not.toBe(id);const edited=await result(workbench.client);
-  await expect(page.locator("#status")).toContainText("Connection lost");await expect(page.locator("#mark")).toBeDisabled();expect(failedArt).toBe(edited);
+  await expect.poll(()=>failedArt,{timeout:recoveryTimeout}).toBe(edited);
+  await expect(page.locator("#status")).toContainText("Connection lost");await expect(page.locator("#mark")).toBeDisabled();
   await show(workbench.client,[replacement],{title:"Replacement available"});
   await settle(page,"Replacement available");await expect(page.locator("#mark")).toBeEnabled();
   expect((await rows(workbench.client,edited))[1][1]).toBe(2);
@@ -370,7 +380,7 @@ test("recovery fences an undelivered stroke before allowing another edit",async(
   await page.route("**/api/presentation/action",async route=>{request=route.request();reached();await blocked;await route.abort().catch(()=>{});},{times:1});
   try{
     await point(page,1,1);await entered;
-    await expect(page.locator("#status")).toContainText("was not applied",{timeout:12000});
+    await expect(page.locator("#status")).toContainText("was not applied",{timeout:recoveryTimeout});
     await expect(page.locator("#mark")).toBeEnabled();expect(await result(workbench.client)).toBe(id);
     const late=await page.request.post(request.url(),{headers:request.headers(),data:request.postDataJSON()});
     expect((await late.json()).error.code).toBe("action_cancelled");expect(await result(workbench.client)).toBe(id);
@@ -411,12 +421,12 @@ test("failed recovery keeps edits disabled until the saved result is confirmed",
   await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});
   await page.route("**/api/presentation/recover",route=>recover?route.abort():route.continue());
   await page.locator("#save").click();await expect.poll(async()=>(await inspect(workbench.client)).saved).not.toBeNull();
-  await expect(page.locator("#status")).toHaveClass(/error/);
+  await expect(page.locator("#status")).toHaveClass(/error/,{timeout:recoveryTimeout});
   await expect(page.locator("#mark")).toBeDisabled();await expect(page.locator("#save")).toBeDisabled();
   await expect(page.locator("#status")).toContainText("Connection lost");
   const saved=(await inspect(workbench.client)).saved;
   expect(await page.locator("canvas").evaluate(c=>Array.from(c.getContext("2d").getImageData(48,48,1,1).data))).toEqual([224,116,64,255]);
-  recover=false;await expect(page.locator("#status")).toHaveText("Saved.");await expect(page.locator("#mark")).toBeEnabled();
+  recover=false;await expect(page.locator("#status")).toHaveText("Saved.",{timeout:recoveryTimeout});await expect(page.locator("#mark")).toBeEnabled();
   expect(requests).toBe(1);expect((await inspect(workbench.client)).saved).toEqual(saved);
 });
 
@@ -589,7 +599,7 @@ test("lost choice responses and a stale click preserve the right candidates",asy
   await show(workbench.client,ids,options);
   const button=page.getByRole("button",{name:"Choose Option 1",exact:true});await expect(button).toBeVisible();
   await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});
-  await button.click();await expect(button).toHaveAttribute("aria-pressed","true");
+  await button.click();await expect(button).toHaveAttribute("aria-pressed","true",{timeout:recoveryTimeout});
   expect((await inspect(workbench.client)).state.chosen_candidates).toEqual([{item_index:0,art_id:ids[0]}]);
   let release,reached;const blocked=new Promise(resolve=>release=resolve),entered=new Promise(resolve=>reached=resolve);
   await page.route("**/api/presentation/action",async route=>{reached();await blocked;await route.continue();},{times:1});
@@ -674,7 +684,7 @@ test("lost marking responses and late strokes preserve the right presentation",a
   const a=await create(workbench.client,"mark-a"),b=await create(workbench.client,"mark-b");await show(workbench.client,[a]);await settle(page);await page.locator("#mark").click();
   await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});
   await stroke(page,page.locator("canvas.markable"),[1,1],[1,1]);
-  await expect(page.locator("#status")).toHaveText("Click Save when you are ready.");
+  await expect(page.locator("#undo")).toBeEnabled({timeout:recoveryTimeout});await expect(page.locator("#status")).toHaveText("Click Save when you are ready.");
   await expect.poll(async()=>(await marks(workbench.client))[0]?.pixels).toEqual([{x:1,y:1}]);
   const original=await inspect(workbench.client);
   let release,reached;const blocked=new Promise(r=>release=r),entered=new Promise(r=>reached=r);
