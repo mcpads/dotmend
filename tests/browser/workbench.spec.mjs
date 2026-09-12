@@ -388,7 +388,10 @@ test("a disconnected screen disables editing and recovers after reconnection",as
   await page.context().setOffline(false);await expect(page.locator("#mark")).toBeEnabled();
   await point(page,1,1);await expect.poll(()=>result(workbench.client)).not.toBe(id);
   await workbench.client.tool("close_workbench",{workbench_id:workbench.client.workbenchId});
-  await expect(page.locator("#status")).toContainText("Connection lost");await expect(page.locator("#mark")).toBeDisabled();
+  // Shutdown can reject an in-flight request or close the connection first.
+  await expect(page.locator("#status")).toHaveText(/^(Connection lost\.|This view has ended\.)/);
+  await expect(page.locator("#mark")).toBeDisabled();await expect(page.locator(".swatch").first()).toBeDisabled();
+  const closedArt=await result(workbench.client);await point(page,2,1);expect(await result(workbench.client)).toBe(closedArt);
 });
 
 test("an ended workbench is distinguished from newly presented artwork",async({page,workbench})=>{
