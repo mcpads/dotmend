@@ -1,6 +1,7 @@
 use crate::server::{SharedWorkspace, web_router};
 use dotmend::{art::*, workbench_protocol::*, workspace::ToolOutput};
 use std::{
+    collections::HashSet,
     fs::{self, File, OpenOptions, TryLockError},
     future::IntoFuture,
     path::{Path, PathBuf},
@@ -12,7 +13,7 @@ use tokio::{sync::watch, task::JoinHandle};
 fn storage(error: impl std::fmt::Display) -> ArtError {
     ArtError::new("storage_error", error.to_string())
 }
-fn locked_file(path: &Path) -> ArtResult<Option<File>> {
+fn open_lock_file(path: &Path) -> ArtResult<File> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
@@ -20,7 +21,10 @@ fn locked_file(path: &Path) -> ArtResult<Option<File>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options.open(path).map_err(storage)?;
+    options.open(path).map_err(storage)
+}
+fn locked_file(path: &Path) -> ArtResult<Option<File>> {
+    let file = open_lock_file(path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(TryLockError::WouldBlock) => Ok(None),
@@ -50,11 +54,13 @@ fn runtime_directory() -> ArtResult<PathBuf> {
 struct Activity {
     active: bool,
     last: Instant,
+    work_state: WorkState,
 }
 pub struct WorkbenchAccess {
     pub instance: WorkbenchInstance,
     control_id: String,
     activity: Mutex<Activity>,
+    cancelled_actions: Mutex<HashSet<String>>,
 }
 impl WorkbenchAccess {
     pub fn apply<T>(&self, id: &str, operation: impl FnOnce() -> ArtResult<T>) -> ArtResult<T> {
@@ -71,6 +77,16 @@ impl WorkbenchAccess {
         activity.last = Instant::now();
         Ok(result)
     }
+    pub fn check_instance(&self, id: &str) -> ArtResult<()> {
+        let activity = self.activity.lock().map_err(storage)?;
+        if id != self.instance.workbench_id || !activity.active {
+            return Err(ArtError::new(
+                "workbench_conflict",
+                "This workbench has ended. Reopen it through open_workbench",
+            ));
+        }
+        Ok(())
+    }
     fn active(&self) -> bool {
         self.activity.lock().is_ok_and(|a| a.active)
     }
@@ -83,6 +99,12 @@ impl WorkbenchAccess {
         let Ok(mut activity) = self.activity.lock() else {
             return true;
         };
+        if !activity.active {
+            return true;
+        }
+        if activity.work_state == WorkState::Working {
+            return false;
+        }
         if activity.last.elapsed() >= Duration::from_secs(self.instance.idle_timeout_seconds) {
             activity.active = false;
         }
@@ -147,6 +169,7 @@ impl Workbench {
                 state,
                 instance,
                 max_workbenches: MAX_WORKBENCHES,
+                work_state: None,
             })
             .map_err(storage)?,
         ))
@@ -241,7 +264,7 @@ impl Workbench {
         }
         if let Some(running) = &mut self.running {
             if running.access.active() && !running.task.is_finished() {
-                return running.access.reopen(&input.control_id);
+                return running.access.reopen(&input.control_id, input.work_state);
             }
             if !running.task.is_finished() {
                 running.finish().await;
@@ -302,13 +325,16 @@ impl Workbench {
         file.as_file().sync_all().map_err(storage)?;
         file.persist(self.root.join(".dotmend/workbench.json"))
             .map_err(storage)?;
+        let work_state = input.work_state.unwrap_or(WorkState::Waiting);
         let access = Arc::new(WorkbenchAccess {
             control_id: input.control_id,
             instance: instance.clone(),
             activity: Mutex::new(Activity {
                 active: true,
                 last: Instant::now(),
+                work_state,
             }),
+            cancelled_actions: Mutex::new(HashSet::new()),
         });
         let app = web_router(workspace, port, access.clone());
         let (shutdown, mut requested) = watch::channel(false);
@@ -348,12 +374,13 @@ impl Workbench {
             }
             lifetime.end();
         });
+        let output = access.inspect(&access.control_id)?;
         self.running = Some(RunningWorkbench {
             access,
             shutdown,
             task,
         });
-        self.result(WorkbenchState::Owned, Some(instance))
+        Ok(output)
     }
     pub async fn close(&mut self, input: CloseWorkbench) -> ArtResult<ToolOutput> {
         validate_control(&input.control_id)?;
@@ -444,11 +471,16 @@ impl WorkbenchAccess {
                 state,
                 instance: owned.then(|| self.instance.clone()),
                 max_workbenches: MAX_WORKBENCHES,
+                work_state: if owned {
+                    Some(self.activity.lock().map_err(storage)?.work_state)
+                } else {
+                    None
+                },
             })
             .map_err(storage)?,
         ))
     }
-    pub fn reopen(&self, id: &str) -> ArtResult<ToolOutput> {
+    pub fn reopen(&self, id: &str, work_state: Option<WorkState>) -> ArtResult<ToolOutput> {
         validate_control(id)?;
         if id != self.control_id {
             return Err(ArtError::new(
@@ -456,8 +488,58 @@ impl WorkbenchAccess {
                 "Another control_id owns this workspace's workbench. Its controller must close it first",
             ));
         }
-        self.apply(&self.instance.workbench_id, || Ok(()))?;
+        {
+            let mut activity = self.activity.lock().map_err(storage)?;
+            if !activity.active {
+                return Err(ArtError::new(
+                    "workbench_conflict",
+                    "This workbench has ended. Inspect and reopen it",
+                ));
+            }
+            if let Some(work_state) = work_state {
+                activity.work_state = work_state;
+            }
+            activity.last = Instant::now();
+        }
         self.inspect(id)
+    }
+    pub fn human_action(
+        &self,
+        id: &str,
+        action_id: Option<&str>,
+        input: dotmend::presentation::HumanAction,
+        recover: bool,
+        workspace: SharedWorkspace,
+    ) -> ArtResult<ToolOutput> {
+        if let Some(action_id) = action_id {
+            if !(16..=128).contains(&action_id.len())
+                || !action_id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                return Err(invalid(
+                    "x-dotmend-action must contain 16..128 ASCII letters, digits, underscores or hyphens",
+                ));
+            }
+        } else if recover {
+            return Err(invalid(
+                "Recovery requires the original x-dotmend-action identifier",
+            ));
+        }
+        self.apply(id, || {
+            let mut cancelled = self.cancelled_actions.lock().map_err(storage)?;
+            let mut workspace = workspace.lock().map_err(storage)?;
+            if recover {
+                let output = workspace.recover_human_action(&input)?;
+                cancelled.insert(action_id.unwrap().to_owned());
+                Ok(output)
+            } else {
+                if action_id.is_some_and(|id| cancelled.contains(id)) {
+                    return Err(ArtError::new("action_cancelled", "This action was settled during recovery and cannot execute again. Read the current presentation before making a new edit"));
+                }
+                workspace.human_action(input)
+            }
+        })
     }
     pub async fn present(
         self: &Arc<Self>,

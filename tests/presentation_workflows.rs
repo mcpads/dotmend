@@ -523,3 +523,173 @@ fn legacy_presentation_payloads_keep_their_ids_and_undo_after_marking_is_added()
     let marked = act(&mut w, mark(&undone, 0, json!([{"x":1,"y":1}]), true));
     assert_eq!(marked["state"]["concerns"][0]["art_id"], base);
 }
+
+fn offer(w: &mut Workspace, ids: &[String]) -> Value {
+    let mut args = arguments(w, ids);
+    for item in args["items"].as_array_mut().unwrap() {
+        item["editable"] = json!(false);
+    }
+    args["candidate_choices"] = json!({"item_indices":(0..ids.len()).collect::<Vec<_>>()});
+    call(w, "present_art", args)["presentation"].clone()
+}
+
+fn choose(view: &Value, indices: &[usize]) -> Value {
+    let mut input = command(view, "choose");
+    input["item_indices"] = json!(indices);
+    input
+}
+
+#[test]
+fn multiple_candidate_choices_are_saved_without_editing_or_approving_art() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut w = Workspace::open(dir.path()).unwrap();
+    let ids = [
+        art(&mut w, "first"),
+        art(&mut w, "second"),
+        art(&mut w, "third"),
+    ];
+    let request = call(
+        &mut w,
+        "request_edit",
+        json!({"base_art_id":ids[0],"write_region":{"x":0,"y":0,"width":8,"height":8},"instruction":"Explore alternative shapes"}),
+    );
+    let view = offer(&mut w, &ids);
+    assert!(view["state"].get("chosen_candidates").is_none());
+    let selected = act(&mut w, choose(&view, &[2, 0]));
+    let choices = json!([{"item_index":0,"art_id":ids[0]},{"item_index":2,"art_id":ids[2]}]);
+    assert_eq!(selected["state"]["chosen_candidates"], choices);
+    assert_eq!(selected["state"]["art_ids"], json!(ids));
+    assert_eq!(selected["undo_available"], false);
+    let marked = act(&mut w, mark(&selected, 0, json!([{"x":1,"y":1}]), true));
+    let changed = act(&mut w, choose(&marked, &[1]));
+    let undone = act(&mut w, command(&changed, "undo"));
+    assert_eq!(
+        undone["state"]["chosen_candidates"],
+        changed["state"]["chosen_candidates"]
+    );
+    assert!(undone["state"].get("concerns").is_none());
+    let selected = act(&mut w, choose(&undone, &[0, 2]));
+    let saved = act(&mut w, command(&selected, "save"));
+    assert_eq!(saved["saved"]["chosen_candidates"], choices);
+    assert_eq!(saved["dirty"], false);
+    drop(w);
+    let mut w = Workspace::open(dir.path()).unwrap();
+    assert_eq!(current(&mut w)["saved"], saved["saved"]);
+    let cleared = act(&mut w, choose(&saved, &[]));
+    assert!(cleared["state"].get("chosen_candidates").is_none());
+    assert_eq!(cleared["saved"]["chosen_candidates"], choices);
+    let cleared = act(&mut w, command(&cleared, "save"));
+    assert!(cleared["saved"].get("chosen_candidates").is_none());
+    let old = call(
+        &mut w,
+        "inspect_presentation",
+        json!({"presentation_id":view["presentation_id"],"state_id":selected["state_id"]}),
+    );
+    assert_eq!(old["presentation"]["state"]["chosen_candidates"], choices);
+    let next = offer(&mut w, &ids);
+    assert!(next["state"].get("chosen_candidates").is_none());
+    assert_eq!(count(&mut w), ids.len());
+    let request = call(
+        &mut w,
+        "inspect_edit_request",
+        json!({"request_id":request["request_id"]}),
+    );
+    assert_eq!(request["human_review"], "pending");
+    assert!(request["result_art_id"].is_null());
+}
+
+#[test]
+fn choices_reject_invalid_candidates_and_leave_the_presentation_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut w = Workspace::open(dir.path()).unwrap();
+    let ids = [
+        art(&mut w, "first"),
+        art(&mut w, "second"),
+        art(&mut w, "comparison"),
+    ];
+    let view = show(&mut w, &ids);
+    assert!(view["presentation"].get("candidate_choices").is_none());
+    assert!(
+        w.human_action(serde_json::from_value(choose(&view, &[0])).unwrap())
+            .is_err()
+    );
+    let mut args = arguments(&mut w, &ids);
+    for item in args["items"].as_array_mut().unwrap() {
+        item["editable"] = json!(false);
+    }
+    for indices in [json!([]), json!([0]), json!([0, 0]), json!([0, 3])] {
+        args["candidate_choices"] = json!({"item_indices":indices});
+        assert!(w.call("present_art", args.clone()).is_err());
+    }
+    args["candidate_choices"] = json!({"item_indices":[0,1]});
+    args["items"][0]["editable"] = json!(true);
+    assert!(w.call("present_art", args.clone()).is_err());
+    args["items"][0]["editable"] = json!(false);
+    let mut duplicate = args.clone();
+    duplicate["items"][1]["art_id"] = json!(ids[0]);
+    assert!(w.call("present_art", duplicate).is_err());
+    let mut playback = args.clone();
+    playback["items"][0]["playback"] = json!([]);
+    assert!(w.call("present_art", playback).is_err());
+    assert_eq!(current(&mut w)["state_id"], view["state_id"]);
+    let offered = call(&mut w, "present_art", args)["presentation"].clone();
+    for indices in [&[0, 0][..], &[2], &[0, 1, 2], &[usize::MAX]] {
+        assert!(
+            w.human_action(serde_json::from_value(choose(&offered, indices)).unwrap())
+                .is_err()
+        );
+        assert_eq!(current(&mut w)["state_id"], offered["state_id"]);
+    }
+    assert!(
+        w.human_action(serde_json::from_value(paint(&offered, 0, 0)).unwrap())
+            .is_err()
+    );
+    assert_eq!(count(&mut w), ids.len());
+}
+
+#[test]
+fn candidate_choice_conflicts_retries_and_storage_failures_preserve_the_latest_choice() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut w = Workspace::open(dir.path()).unwrap();
+    let ids = [art(&mut w, "first"), art(&mut w, "second")];
+    let view = offer(&mut w, &ids);
+    let input = choose(&view, &[0]);
+    let db = rusqlite::Connection::open(dir.path().join(".dotmend/art.sqlite")).unwrap();
+    db.execute_batch("CREATE TRIGGER reject_choice BEFORE INSERT ON presentation_states WHEN json_extract(NEW.payload,'$.action')='choose' BEGIN SELECT RAISE(FAIL,'test write failure'); END;").unwrap();
+    assert_eq!(
+        w.human_action(serde_json::from_value(input.clone()).unwrap())
+            .err()
+            .unwrap()
+            .code,
+        "storage_error"
+    );
+    assert_eq!(current(&mut w)["state_id"], view["state_id"]);
+    db.execute_batch("DROP TRIGGER reject_choice").unwrap();
+    let first = act(&mut w, input.clone());
+    let mut other = Workspace::open(dir.path()).unwrap();
+    assert_eq!(
+        other
+            .human_action(serde_json::from_value(choose(&view, &[1])).unwrap())
+            .err()
+            .unwrap()
+            .code,
+        "presentation_conflict"
+    );
+    let second = act(&mut other, choose(&first, &[1]));
+    assert_eq!(act(&mut w, input)["state_id"], second["state_id"]);
+    let save = command(&second, "save");
+    let saved = act(&mut w, save.clone());
+    let changed = act(&mut w, choose(&saved, &[0, 1]));
+    let latest = act(&mut w, command(&changed, "save"));
+    assert_eq!(act(&mut w, save)["saved"], latest["saved"]);
+    let next = offer(&mut w, &ids);
+    assert_eq!(
+        w.human_action(serde_json::from_value(choose(&latest, &[])).unwrap())
+            .err()
+            .unwrap()
+            .code,
+        "presentation_conflict"
+    );
+    assert_eq!(current(&mut w)["state_id"], next["state_id"]);
+    assert_eq!(count(&mut w), ids.len());
+}

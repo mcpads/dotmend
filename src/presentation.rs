@@ -49,6 +49,19 @@ impl PresentationItem {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CandidateChoices {
+    /// Indices of distinct, static, read-only art items offered as alternatives.
+    #[schemars(length(min = 2, max = 16))]
+    pub item_indices: Vec<usize>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChosenCandidate {
+    pub item_index: usize,
+    pub art_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 #[schemars(extend("required" = ["title", "items", "expected_presentation_id", "expected_state_id"]))]
 pub struct PresentArt {
     pub title: String,
@@ -59,6 +72,9 @@ pub struct PresentArt {
     pub expected_presentation_id: Option<String>,
     #[serde(deserialize_with = "required_nullable")]
     pub expected_state_id: Option<String>,
+    /// Offer candidates for the human to choose and save as the basis for further work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_choices: Option<CandidateChoices>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +89,7 @@ pub enum PresentationActionKind {
     Paint,
     Mark,
     Undo,
+    Choose,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +112,8 @@ pub struct PresentationState {
     pub concerns: Vec<Concern>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub undo_concerns: Option<Vec<Concern>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen_candidates: Vec<ChosenCandidate>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -105,6 +124,8 @@ pub struct SavedPresentation {
     pub art_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub concerns: Vec<Concern>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen_candidates: Vec<ChosenCandidate>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -128,6 +149,12 @@ pub struct PresentedArt {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HumanAction {
+    Choose {
+        presentation_id: String,
+        expected_state_id: String,
+        /// The complete choice, or an empty list to clear it.
+        item_indices: Vec<usize>,
+    },
     Mark {
         presentation_id: String,
         expected_state_id: String,
@@ -153,7 +180,12 @@ pub enum HumanAction {
 impl HumanAction {
     pub fn identity(&self) -> (&str, &str) {
         match self {
-            Self::Mark {
+            Self::Choose {
+                presentation_id,
+                expected_state_id,
+                ..
+            }
+            | Self::Mark {
                 presentation_id,
                 expected_state_id,
                 ..

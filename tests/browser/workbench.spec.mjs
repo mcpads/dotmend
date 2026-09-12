@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { createConnection } from "node:net";
 
-const binary = resolve(`target/debug/dotmend${process.platform === "win32" ? ".exe" : ""}`);
+const binary = resolve(process.env.DOTMEND_TEST_BINARY || `target/debug/dotmend${process.platform === "win32" ? ".exe" : ""}`);
 function mcpClient(workspace, runtimeDirectory=join(workspace,"runtime"), perRequestMetadata=true) {
   const child = spawn(binary, ["--workspace", workspace], { stdio: ["pipe", "pipe", "pipe"], env:{...process.env,DOTMEND_RUNTIME_DIR:runtimeDirectory} });
   const controlId = randomUUID();
@@ -99,7 +99,7 @@ test("a stale browser action cannot write onto an agent's new presentation",asyn
 test("a lost save response is recovered without inventing a new result",async({page,workbench})=>{
   const a=await create(workbench.client,"save");await show(workbench.client,[a]);await settle(page);await color(page);await point(page,1,1);await expect.poll(()=>result(workbench.client)).not.toBe(a);const painted=await result(workbench.client);
   await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});await page.locator("#save").click();await expect.poll(async()=>(await inspect(workbench.client)).saved?.art_ids[0]).toBe(painted);
-  await expect(page.locator("#status")).toContainText("Please check your saved work");
+  await expect(page.locator("#status")).toHaveText("Saved.");
   await page.reload();await settle(page);await expect(page.locator("#status")).toHaveText("Saved.");await expect(page.locator("#save")).toBeDisabled();expect(await result(workbench.client)).toBe(painted);
 });
 test("the agent records a user's explicit feedback while save alone does not approve art",async({page,workbench})=>{
@@ -209,11 +209,42 @@ test("browser polling does not prevent idle shutdown and reopening keeps the dra
   const id=await create(workbench.client,"idle");await show(workbench.client,[id]);const draft=await inspect(workbench.client);
   await workbench.client.tool("close_workbench",{workbench_id:workbench.client.workbenchId});
   const short=await instance(workbench.client,{idle_timeout_seconds:2});await page.goto(short.url);await settle(page);
+  await page.evaluate(()=>setInterval(()=>document.dispatchEvent(new PointerEvent("pointermove",{bubbles:true})),100));
   await expect.poll(async()=>(await workbench.client.tool("inspect_workbench",{})).structuredContent.state,{timeout:7000}).toBe("closed");
   expect(await isServing(page,short.url)).toBe(false);
   const renewed=await instance(workbench.client);expect(renewed.workbench_id).not.toBe(short.workbench_id);expect((await inspect(workbench.client)).state_id).toBe(draft.state_id);
   expect((await workbench.client.tool("close_workbench",{workbench_id:short.workbench_id})).structuredContent.error.code).toBe("workbench_conflict");
   expect(await isServing(page,renewed.url)).toBe(true);
+  expect((await (await page.request.get(renewed.url+"/api/workbench")).json()).workbench_id).toBe(renewed.workbench_id);
+});
+
+for(const activity of ["scrolling","choosing a color","dragging"])test(`${activity} renews idle time without changing the workbench address`,async({page,workbench})=>{
+  await page.setViewportSize({width:600,height:1000});
+  const id=await create(workbench.client,"active-view");
+  await show(workbench.client,[id],{items:[{kind:"art",art_id:id,label:"Image to edit",region:{x:0,y:0,width:8,height:8},scale:64,editable:true}]});
+  const original=await inspect(workbench.client);
+  await workbench.client.tool("close_workbench",{workbench_id:workbench.client.workbenchId});
+  const opened=await instance(workbench.client,{idle_timeout_seconds:2});await page.goto(opened.url);await settle(page);
+  const canvas=page.locator("canvas.markable"),box=await canvas.boundingBox();
+  if(activity==="scrolling")await page.locator(".drawing").hover();
+  if(activity==="dragging"){
+    await page.locator("#mark").click();await page.mouse.move(box.x+32,box.y+32);await page.mouse.down();
+  }
+  // Keep interacting past the original deadline without completing a stored action.
+  for(let i=0;i<8;i++){
+    await page.waitForTimeout(400);
+    if(activity==="scrolling")await page.mouse.wheel(i%2?-24:24,0);
+    else if(activity==="choosing a color")await color(page);
+    else await page.mouse.move(box.x+32+(i%2)*64,box.y+32);
+  }
+  const current=(await workbench.client.tool("inspect_workbench",{})).structuredContent;
+  expect(current.state).toBe("owned");expect(current.instance).toEqual(opened);
+  expect((await inspect(workbench.client)).state_id).toBe(original.state_id);
+  if(activity==="dragging"){
+    await page.mouse.up();await expect.poll(async()=>(await marks(workbench.client))[0]?.pixels).toEqual([{x:0,y:0},{x:1,y:0}]);
+  }
+  // Stopping real input must still release an unattended screen despite browser polling.
+  await expect.poll(async()=>(await workbench.client.tool("inspect_workbench",{})).structuredContent.state,{timeout:7000}).toBe("closed");
 });
 
 test("HTTP cannot bypass managed MCP ownership for tool mutations",async({page,workbench})=>{
@@ -222,6 +253,201 @@ test("HTTP cannot bypass managed MCP ownership for tool mutations",async({page,w
   expect((await response.json()).error.code).toBe("mcp_required");expect((await inspect(workbench.client)).state_id).toBe(view.state_id);
   const noIdentity=await page.request.post(workbench.url+"/api/presentation/action",{data:{action:"save",presentation_id:view.presentation_id,expected_state_id:view.state_id}});
   expect((await noIdentity.json()).error.code).toBe("workbench_conflict");
+});
+
+test("an owning agent renews the same address across connections while continuing work",async({page,workbench})=>{
+  await workbench.client.tool("close_workbench",{workbench_id:workbench.client.workbenchId});
+  const opened=await instance(workbench.client,{idle_timeout_seconds:2});
+  const other=mcpClient(workbench.workspace);await other.discover();
+  try{
+    for(let i=0;i<4;i++){
+      await page.waitForTimeout(650);
+      const renewed=(await other.tool("open_workbench",{control_id:workbench.client.controlId,idle_timeout_seconds:1})).structuredContent;
+      expect(renewed.state).toBe("owned");expect(renewed.instance).toEqual(opened);
+    }
+    await stopClient(other);
+    expect(await isServing(page,opened.url)).toBe(true);
+    await expect.poll(async()=>(await workbench.client.tool("inspect_workbench",{})).structuredContent.state,{timeout:7000}).toBe("closed");
+  }finally{await stopClient(other);}
+});
+
+test("unrelated art calls cannot keep an unattended workbench alive",async({page,workbench})=>{
+  const id=await create(workbench.client,"agent-activity");
+  await workbench.client.tool("close_workbench",{workbench_id:workbench.client.workbenchId});
+  const opened=await instance(workbench.client,{idle_timeout_seconds:2});
+  const other=mcpClient(workbench.workspace);await other.discover();
+  try{
+    for(let i=0;i<6;i++){
+      await page.waitForTimeout(500);
+      const result=await other.tool(i%2?"render_art":"inspect_art",{art_id:id});expect(result.structuredContent.ok).toBe(true);
+    }
+    const current=(await workbench.client.tool("inspect_workbench",{})).structuredContent;
+    expect(current.state).toBe("closed");
+    expect(await isServing(page,opened.url)).toBe(false);
+  }finally{await stopClient(other);}
+});
+
+test("declared agent work survives external waiting and returns to idle at handoff",async({page,workbench})=>{
+  await workbench.client.tool("close_workbench",{workbench_id:workbench.client.workbenchId});
+  const opened=await instance(workbench.client,{idle_timeout_seconds:1,work_state:"working"});
+  const other=mcpClient(workbench.workspace);await other.discover();
+  try{
+    await page.waitForTimeout(2200);
+    const current=(await other.tool("inspect_workbench",{control_id:workbench.client.controlId})).structuredContent;
+    expect(current.state).toBe("owned");expect(current.instance).toEqual(opened);expect(current.work_state).toBe("working");
+    expect((await other.tool("open_workbench",{control_id:workbench.client.controlId})).structuredContent.work_state).toBe("working");
+    expect((await other.tool("open_workbench",{work_state:"waiting"})).structuredContent.error.code).toBe("workbench_busy");
+    const handoff=(await other.tool("open_workbench",{control_id:workbench.client.controlId,work_state:"waiting"})).structuredContent;
+    expect(handoff.instance).toEqual(opened);expect(handoff.work_state).toBe("waiting");
+    for(let i=0;i<7;i++){
+      await page.waitForTimeout(250);
+      await other.tool("inspect_presentation",{});
+      expect((await other.tool("inspect_art",{art_id:"missing"})).isError).toBe(true);
+    }
+    expect((await workbench.client.tool("inspect_workbench",{})).structuredContent.state).toBe("closed");
+  }finally{await stopClient(other);}
+});
+
+test("a stalled committed save recovers without reloading or replaying it",async({page,workbench})=>{
+  const id=await create(workbench.client,"stalled-save");await show(workbench.client,[id]);await settle(page);await color(page);await point(page,1,1);
+  await expect.poll(()=>result(workbench.client)).not.toBe(id);
+  let requests=0;
+  page.on("request",request=>{if(request.url().endsWith("/api/presentation/action"))requests++;});
+  await page.evaluate(()=>{
+    const fetch=window.fetch;
+    let release;const blocked=new Promise(resolve=>release=resolve);
+    window.delayedSave={ready:false,settled:false,release};
+    window.fetch=async(...args)=>{
+      const response=await fetch(...args);
+      if(String(args[0]).endsWith("/api/presentation/action")&&JSON.parse(args[1].body).action==="save"){
+        window.fetch=fetch;
+        const data=await response.json();
+        // Delay parsed data so abort cannot prevent its eventual completion.
+        response.json=async()=>{window.delayedSave.ready=true;await blocked;window.delayedSave.settled=true;return data;};
+      }
+      return response;
+    };
+  });
+  try{
+    await page.locator("#save").click();await expect.poll(()=>page.evaluate(()=>window.delayedSave.ready)).toBe(true);
+    const saved=(await inspect(workbench.client)).saved;
+    await expect(page.locator("#status")).toHaveText("Saved.",{timeout:12000});
+    await expect(page.locator("#mark")).toBeEnabled();expect(requests).toBe(1);
+    await point(page,2,1);await expect.poll(()=>result(workbench.client)).not.toBe(saved.art_ids[0]);
+    await expect(page.locator("#status")).toHaveText("Click Save when you are ready.");
+    const edited=await result(workbench.client);
+    await page.evaluate(async()=>{window.delayedSave.release();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+    expect(await page.evaluate(()=>window.delayedSave.settled)).toBe(true);
+    await expect(page.locator("#status")).toHaveText("Click Save when you are ready.");await expect(page.locator("#save")).toBeEnabled();
+    expect(await page.locator("canvas").evaluate(c=>Array.from(c.getContext("2d").getImageData(80,48,1,1).data))).toEqual([224,116,64,255]);
+    expect(await result(workbench.client)).toBe(edited);expect((await inspect(workbench.client)).saved).toEqual(saved);expect(requests).toBe(2);
+  }finally{await page.evaluate(()=>window.delayedSave.release());}
+});
+
+for(const lostResponse of [false,true])test(`a ${lostResponse?"recovered":"confirmed"} edit follows new artwork after its image fails to load`,async({page,workbench})=>{
+  const id=await create(workbench.client,"failed-edit-image"),replacement=await create(workbench.client,"replacement-image");
+  await show(workbench.client,[id]);await settle(page);await color(page);
+  let failedArt;
+  await page.route("**/api/art/*",route=>{
+    const artId=route.request().url().split("/").pop();
+    if(artId!==id&&artId!==replacement){failedArt=artId;return route.fulfill({status:503,json:{ok:false,error:{code:"source_unavailable",message:"Temporary asset failure"}}});}
+    return route.continue();
+  });
+  if(lostResponse)await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});
+  await point(page,1,1);await expect.poll(()=>result(workbench.client)).not.toBe(id);const edited=await result(workbench.client);
+  await expect(page.locator("#status")).toContainText("Connection lost");await expect(page.locator("#mark")).toBeDisabled();expect(failedArt).toBe(edited);
+  await show(workbench.client,[replacement],{title:"Replacement available"});
+  await settle(page,"Replacement available");await expect(page.locator("#mark")).toBeEnabled();
+  expect((await rows(workbench.client,edited))[1][1]).toBe(2);
+  await page.unroute("**/api/art/*");await color(page);await point(page,2,1);
+  await expect(page.locator("#undo")).toBeEnabled();
+  expect((await rows(workbench.client,await result(workbench.client)))[1]).toEqual([0,0,2,0,0,0,0,0]);
+});
+
+test("recovery fences an undelivered stroke before allowing another edit",async({page,workbench})=>{
+  const id=await create(workbench.client,"late-stroke");await show(workbench.client,[id]);await settle(page);await color(page);
+  let release;const blocked=new Promise(resolve=>release=resolve);let reached;const entered=new Promise(resolve=>reached=resolve);let request;
+  await page.route("**/api/presentation/action",async route=>{request=route.request();reached();await blocked;await route.abort().catch(()=>{});},{times:1});
+  try{
+    await point(page,1,1);await entered;
+    await expect(page.locator("#status")).toContainText("was not applied",{timeout:12000});
+    await expect(page.locator("#mark")).toBeEnabled();expect(await result(workbench.client)).toBe(id);
+    const late=await page.request.post(request.url(),{headers:request.headers(),data:request.postDataJSON()});
+    expect((await late.json()).error.code).toBe("action_cancelled");expect(await result(workbench.client)).toBe(id);
+    await point(page,2,1);await expect.poll(()=>result(workbench.client)).not.toBe(id);
+    expect((await rows(workbench.client,await result(workbench.client)))[1]).toEqual([0,0,2,0,0,0,0,0]);
+  }finally{release();}
+});
+
+test("a disconnected screen disables editing and recovers after reconnection",async({page,workbench})=>{
+  const id=await create(workbench.client,"connection");await show(workbench.client,[id]);await settle(page);await color(page);
+  await page.context().setOffline(true);
+  await expect(page.locator("#status")).toContainText("Connection lost");
+  await expect(page.locator("#mark")).toBeDisabled();await expect(page.locator(".swatch").first()).toBeDisabled();
+  await point(page,1,1);expect(await result(workbench.client)).toBe(id);
+  await page.context().setOffline(false);await expect(page.locator("#mark")).toBeEnabled();
+  await point(page,1,1);await expect.poll(()=>result(workbench.client)).not.toBe(id);
+  await workbench.client.tool("close_workbench",{workbench_id:workbench.client.workbenchId});
+  // Shutdown can reject an in-flight request or close the connection first.
+  await expect(page.locator("#status")).toHaveText(/^(Connection lost\.|This view has ended\.)/);
+  await expect(page.locator("#mark")).toBeDisabled();await expect(page.locator(".swatch").first()).toBeDisabled();
+  const closedArt=await result(workbench.client);await point(page,2,1);expect(await result(workbench.client)).toBe(closedArt);
+});
+
+test("an ended workbench is distinguished from newly presented artwork",async({page,workbench})=>{
+  const id=await create(workbench.client,"execution-conflict");await show(workbench.client,[id]);await settle(page);await color(page);
+  const before=await inspect(workbench.client);
+  await page.route("**/api/presentation/action",route=>route.continue({headers:{...route.request().headers(),"x-retro-art-workbench":"old-instance"}}),{times:1});
+  await point(page,1,1);
+  await expect(page.locator("#status")).toContainText("Ask your agent to reopen");await expect(page.locator("#mark")).toBeDisabled();
+  expect((await inspect(workbench.client)).state_id).toBe(before.state_id);
+});
+
+test("failed recovery keeps edits disabled until the saved result is confirmed",async({page,workbench})=>{
+  const id=await create(workbench.client,"retry-recovery");await show(workbench.client,[id]);await settle(page);await color(page);await point(page,1,1);
+  await expect.poll(()=>result(workbench.client)).not.toBe(id);await expect(page.locator("#undo")).toBeEnabled();
+  let requests=0,recover=true;
+  page.on("request",request=>{if(request.url().endsWith("/api/presentation/action"))requests++;});
+  await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});
+  await page.route("**/api/presentation/recover",route=>recover?route.abort():route.continue());
+  await page.locator("#save").click();await expect.poll(async()=>(await inspect(workbench.client)).saved).not.toBeNull();
+  await expect(page.locator("#status")).toHaveClass(/error/);
+  await expect(page.locator("#mark")).toBeDisabled();await expect(page.locator("#save")).toBeDisabled();
+  await expect(page.locator("#status")).toContainText("Connection lost");
+  const saved=(await inspect(workbench.client)).saved;
+  expect(await page.locator("canvas").evaluate(c=>Array.from(c.getContext("2d").getImageData(48,48,1,1).data))).toEqual([224,116,64,255]);
+  recover=false;await expect(page.locator("#status")).toHaveText("Saved.");await expect(page.locator("#mark")).toBeEnabled();
+  expect(requests).toBe(1);expect((await inspect(workbench.client)).saved).toEqual(saved);
+});
+
+test("art tool work in another project does not keep an unattended screen alive",async({page,workbench})=>{
+  const other=mcpClient(join(workbench.workspace,"other-project"));await other.discover();
+  try{
+    const id=await create(other,"unrelated-activity");
+    await workbench.client.tool("close_workbench",{workbench_id:workbench.client.workbenchId});
+    await instance(workbench.client,{idle_timeout_seconds:2});
+    for(let i=0;i<6;i++){
+      await page.waitForTimeout(500);
+      expect((await other.tool("inspect_art",{art_id:id})).structuredContent.ok).toBe(true);
+    }
+    expect((await workbench.client.tool("inspect_workbench",{})).structuredContent.state).toBe("closed");
+  }finally{await stopClient(other);}
+});
+
+test("missing or stale instance IDs and foreign origins cannot renew idle time",async({page,workbench})=>{
+  const stale=workbench.client.workbenchId;
+  await workbench.client.tool("close_workbench",{workbench_id:stale});
+  const opened=await instance(workbench.client,{idle_timeout_seconds:2});
+  const url=opened.url+"/api/workbench/activity";
+  const missing=await page.request.post(url);expect((await missing.json()).error.code).toBe("workbench_conflict");
+  const foreign=await page.request.post(url,{headers:{"x-retro-art-workbench":opened.workbench_id,Origin:"https://example.com"}});expect(foreign.status()).toBe(403);
+  for(let i=0;i<4;i++){
+    const response=await page.request.post(url,{headers:{"x-retro-art-workbench":stale}});
+    expect((await response.json()).error.code).toBe("workbench_conflict");
+    await page.waitForTimeout(400);
+  }
+  // Valid renewals during that interval would move shutdown beyond this deadline.
+  await expect.poll(async()=>(await workbench.client.tool("inspect_workbench",{})).structuredContent.state,{timeout:1200,intervals:[100]}).toBe("closed");
 });
 
 
@@ -324,6 +550,72 @@ async function stroke(page,canvas,from,to,button="left"){
 }
 async function marks(client){return (await inspect(client)).state.concerns||[];}
 
+test("the human saves several candidates and the agent continues from those exact choices",async({page,workbench},testInfo)=>{
+  const base=await create(workbench.client,"candidate-options");
+  const ids=[];
+  for(const x of [1,3,5])ids.push((await workbench.client.tool("edit_art",{art_id:base,write_region:{x:0,y:0,width:8,height:8},operations:[{kind:"fill_rect",rect:{x,y:1,width:2,height:6},index:2}]})).structuredContent.art_id);
+  const items=[base,...ids].map((art_id,index)=>({kind:"art",art_id,label:index?`Option ${index}`:"Original",region:{x:0,y:0,width:8,height:8},scale:20,editable:false}));
+  const initial=await show(workbench.client,ids,{title:"Choose directions to explore",items,candidate_choices:{item_indices:[1,2,3]}});
+  await expect(page.locator("#title")).toHaveText("Choose directions to explore");
+  await expect(page.getByRole("button",{name:"Choose Original",exact:true})).toHaveCount(0);
+  const first=page.getByRole("button",{name:"Choose Option 1",exact:true});
+  const second=page.getByRole("button",{name:"Choose Option 2",exact:true});
+  const third=page.getByRole("button",{name:"Choose Option 3",exact:true});
+  await first.click();await expect(first).toHaveAttribute("aria-pressed","true");
+  await third.focus();await page.keyboard.press("Space");await expect(third).toHaveAttribute("aria-pressed","true");await expect(third).toBeFocused();
+  await expect(second).toHaveAttribute("aria-pressed","false");
+  const chosen=[{item_index:1,art_id:ids[0]},{item_index:3,art_id:ids[2]}];
+  await expect.poll(async()=>(await inspect(workbench.client)).state.chosen_candidates).toEqual(chosen);
+  await page.keyboard.press(`${modifier}+s`);await expect(page.locator("#status")).toHaveText("Saved.");
+  const saved=(await inspect(workbench.client)).saved;expect(saved.chosen_candidates).toEqual(chosen);expect(saved.art_ids).toEqual([base,...ids]);
+  await page.reload();await expect(first).toHaveAttribute("aria-pressed","true");await expect(third).toHaveAttribute("aria-pressed","true");
+  await first.click();await expect(first).toHaveAttribute("aria-pressed","false");expect((await inspect(workbench.client)).saved).toEqual(saved);
+  await first.click();await expect(first).toHaveAttribute("aria-pressed","true");
+  await page.screenshot({path:testInfo.outputPath("candidate-choices.png"),fullPage:true});
+  const next=[];
+  for(const candidate of saved.chosen_candidates){
+    const output=(await workbench.client.tool("edit_art",{art_id:candidate.art_id,write_region:{x:0,y:0,width:8,height:8},operations:[{kind:"set_pixels",pixels:[{x:0,y:0,index:2}]}]})).structuredContent;
+    expect(output.ok).toBe(true);expect(output.base_art_id).toBe(candidate.art_id);next.push(output.art_id);
+  }
+  await show(workbench.client,next,{title:"Refined choices",items:next.map((art_id,i)=>({kind:"art",art_id,label:`Refinement ${i+1}`,region:{x:0,y:0,width:8,height:8},scale:20,editable:false})),candidate_choices:{item_indices:[0,1]}});
+  await expect(page.locator("#title")).toHaveText("Refined choices");await expect(page.locator('.candidate-choice[aria-pressed="true"]')).toHaveCount(0);
+  const history=(await workbench.client.tool("inspect_presentation",{presentation_id:initial.presentation_id,state_id:saved.state_id})).structuredContent.presentation;
+  expect(history.state.chosen_candidates).toEqual(chosen);
+});
+
+test("lost choice responses and a stale click preserve the right candidates",async({page,workbench})=>{
+  const ids=[await create(workbench.client,"choice-a"),await create(workbench.client,"choice-b")];
+  const options={items:ids.map((art_id,i)=>({kind:"art",art_id,label:`Option ${i+1}`,region:{x:0,y:0,width:8,height:8},scale:16,editable:false})),candidate_choices:{item_indices:[0,1]}};
+  await show(workbench.client,ids,options);
+  const button=page.getByRole("button",{name:"Choose Option 1",exact:true});await expect(button).toBeVisible();
+  await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});
+  await button.click();await expect(button).toHaveAttribute("aria-pressed","true");
+  expect((await inspect(workbench.client)).state.chosen_candidates).toEqual([{item_index:0,art_id:ids[0]}]);
+  let release,reached;const blocked=new Promise(resolve=>release=resolve),entered=new Promise(resolve=>reached=resolve);
+  await page.route("**/api/presentation/action",async route=>{reached();await blocked;await route.continue();},{times:1});
+  await page.getByRole("button",{name:"Choose Option 2",exact:true}).click();await entered;
+  const next=await show(workbench.client,ids,{...options,title:"A new comparison"});
+  release();await expect(page.locator("#title")).toHaveText("A new comparison");await expect(page.locator('.candidate-choice[aria-pressed="true"]')).toHaveCount(0);
+  const current=await inspect(workbench.client);expect(current.state_id).toBe(next.state_id);expect(current.state.chosen_candidates||[]).toEqual([]);
+});
+
+test("marking an overflowing picture preserves its scroll position through undo and save",async({page,workbench})=>{
+  await page.setViewportSize({width:700,height:700});
+  const id=(await workbench.client.tool("create_art",{target:{resource_id:"scrolling-art",width:64,height:64,palette:["#000000","#E07440"],transparent_index:0,allowed_indices:[0,1],constraints_ref:null,requirements:[]},initial:{kind:"fill",index:1}})).structuredContent.art_id;
+  await show(workbench.client,[id],{items:[{kind:"art",art_id:id,label:"Large picture",region:{x:0,y:0,width:64,height:64},scale:16,editable:true}]});await settle(page);
+  await page.locator("#mark").click();
+  await page.locator(".drawing").evaluate(well=>{well.scrollLeft=160;window.scrollTo(0,300);});
+  const scroll=()=>page.locator(".drawing").evaluate(well=>({left:well.scrollLeft,top:well.scrollTop,pageY:window.scrollY}));
+  const before=await scroll();expect(before.left).toBeGreaterThan(0);expect(before.pageY).toBeGreaterThan(0);
+  const box=await page.locator(".drawing").boundingBox();
+  await page.mouse.move(box.x+50,300);await page.mouse.down();await page.mouse.move(box.x+220,350,{steps:12});await page.mouse.up();
+  await expect.poll(async()=>(await marks(workbench.client))[0]?.pixels.length||0).toBeGreaterThan(1);
+  await expect(page.locator("#undo")).toBeEnabled();
+  expect(await scroll()).toEqual(before);
+  await page.keyboard.press(`${modifier}+z`);await expect.poll(()=>marks(workbench.client)).toEqual([]);await expect(page.locator("#save")).toBeEnabled();await expect(page.locator("#undo")).toBeDisabled();expect(await scroll()).toEqual(before);
+  await page.keyboard.press(`${modifier}+s`);await expect(page.locator("#status")).toHaveText("Saved.");expect(await scroll()).toEqual(before);
+});
+
 test("issue mode adds and removes exact pixels without painting and the agent reads the saved marks",async({page,workbench},testInfo)=>{
   const id=await create(workbench.client,"marked-crop");
   await show(workbench.client,[id],{items:[{kind:"art",art_id:id,label:"Hair detail",region:{x:2,y:3,width:4,height:3},scale:32,editable:true}]});await settle(page);
@@ -382,7 +674,7 @@ test("lost marking responses and late strokes preserve the right presentation",a
   const a=await create(workbench.client,"mark-a"),b=await create(workbench.client,"mark-b");await show(workbench.client,[a]);await settle(page);await page.locator("#mark").click();
   await page.route("**/api/presentation/action",async route=>{await route.fetch();await route.abort();},{times:1});
   await stroke(page,page.locator("canvas.markable"),[1,1],[1,1]);
-  await expect(page.locator("#status")).toContainText("Please check your saved work");
+  await expect(page.locator("#status")).toHaveText("Click Save when you are ready.");
   await expect.poll(async()=>(await marks(workbench.client))[0]?.pixels).toEqual([{x:1,y:1}]);
   const original=await inspect(workbench.client);
   let release,reached;const blocked=new Promise(r=>release=r),entered=new Promise(r=>reached=r);
