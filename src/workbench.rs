@@ -181,6 +181,9 @@ impl Workbench {
         .map_err(storage)
     }
     fn available(&self) -> ArtResult<bool> {
+        if !self.root.join(".dotmend").exists() {
+            return Ok(true);
+        }
         Ok(locked_file(&self.root.join(".dotmend/workbench.lock"))?.is_some())
     }
     async fn forward(&self, tool: &str, arguments: serde_json::Value) -> ArtResult<ToolOutput> {
