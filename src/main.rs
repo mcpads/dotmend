@@ -3,12 +3,8 @@ mod server;
 mod server_instructions;
 mod workbench;
 
-use dotmend::workspace::Workspace;
 use rmcp::ServiceExt;
-use std::{
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::{path::PathBuf, sync::Arc};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,8 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }
     }
-    let workspace = Arc::new(Mutex::new(Workspace::open(&root)?));
-    let root = root.canonicalize()?;
+    let root = std::path::absolute(root)?;
+    let workspace = Arc::new(server::DeferredWorkspace::new(root.clone()));
     let workbench = Arc::new(tokio::sync::Mutex::new(workbench::Workbench::new(root)));
     let service = server::ArtServer {
         workspace,

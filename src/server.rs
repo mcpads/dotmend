@@ -18,7 +18,42 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
-pub(crate) type SharedWorkspace = Arc<Mutex<Workspace>>;
+pub(crate) type SharedWorkspace = Arc<DeferredWorkspace>;
+
+pub(crate) struct DeferredWorkspace {
+    root: std::path::PathBuf,
+    value: Mutex<Option<Workspace>>,
+}
+impl DeferredWorkspace {
+    pub fn new(root: std::path::PathBuf) -> Self {
+        Self {
+            root,
+            value: Mutex::new(None),
+        }
+    }
+    pub fn lock(&self) -> ArtResult<WorkspaceGuard<'_>> {
+        let mut guard = self
+            .value
+            .lock()
+            .map_err(|_| ArtError::new("storage_error", "Failed to lock the workspace"))?;
+        if guard.is_none() {
+            *guard = Some(Workspace::open(&self.root)?);
+        }
+        Ok(WorkspaceGuard(guard))
+    }
+}
+pub(crate) struct WorkspaceGuard<'a>(std::sync::MutexGuard<'a, Option<Workspace>>);
+impl std::ops::Deref for WorkspaceGuard<'_> {
+    type Target = Workspace;
+    fn deref(&self) -> &Workspace {
+        self.0.as_ref().expect("workspace initialized under lock")
+    }
+}
+impl std::ops::DerefMut for WorkspaceGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Workspace {
+        self.0.as_mut().expect("workspace initialized under lock")
+    }
+}
 pub struct ArtServer {
     pub workspace: SharedWorkspace,
     pub workbench: Arc<tokio::sync::Mutex<crate::workbench::Workbench>>,
@@ -49,14 +84,9 @@ fn mcp_tools() -> Vec<Tool> {
         .collect()
 }
 async fn execute(shared: SharedWorkspace, name: String, args: Value) -> ArtResult<ToolOutput> {
-    tokio::task::spawn_blocking(move || {
-        shared
-            .lock()
-            .map_err(|_| ArtError::new("storage_error", "Failed to lock the workspace"))?
-            .call(&name, args)
-    })
-    .await
-    .map_err(|e| ArtError::new("storage_error", e.to_string()))?
+    tokio::task::spawn_blocking(move || shared.lock()?.call(&name, args))
+        .await
+        .map_err(|e| ArtError::new("storage_error", e.to_string()))?
 }
 impl ServerHandler for ArtServer {
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
@@ -178,20 +208,29 @@ impl ServerHandler for ArtServer {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        let (bytes, mime) = self
-            .workspace
-            .lock()
-            .map_err(|_| ErrorData::internal_error("Failed to lock storage", None))?
-            .resource(&request.uri)
-            .map_err(|e| match e.code.as_str() {
-                "source_unavailable" | "selection_not_found" | "resource_not_found" => {
-                    ErrorData::resource_not_found(e.to_string(), Some(json!({"uri":request.uri})))
-                }
-                "invalid_input" => {
-                    ErrorData::invalid_params(e.to_string(), Some(json!({"uri":request.uri})))
-                }
-                _ => ErrorData::internal_error(e.to_string(), Some(json!({"uri":request.uri}))),
-            })?;
+        let (bytes, mime) = if matches!(
+            request.uri.as_str(),
+            "dotmend://guides/editing" | "retro-art://guides/editing"
+        ) {
+            Ok((
+                include_bytes!("../resources/agent-usage.md").to_vec(),
+                "text/markdown",
+            ))
+        } else {
+            self.workspace
+                .lock()
+                .map_err(|_| ErrorData::internal_error("Failed to lock storage", None))?
+                .resource(&request.uri)
+        }
+        .map_err(|e| match e.code.as_str() {
+            "source_unavailable" | "selection_not_found" | "resource_not_found" => {
+                ErrorData::resource_not_found(e.to_string(), Some(json!({"uri":request.uri})))
+            }
+            "invalid_input" => {
+                ErrorData::invalid_params(e.to_string(), Some(json!({"uri":request.uri})))
+            }
+            _ => ErrorData::internal_error(e.to_string(), Some(json!({"uri":request.uri}))),
+        })?;
         let contents = if mime == "application/json" || mime.starts_with("text/") {
             ResourceContents::text(
                 String::from_utf8(bytes)
@@ -525,6 +564,8 @@ impl ArtServer {
         }
         match name {
             "open_workbench" => {
+                // Initialize storage only when a caller starts using the workspace.
+                drop(self.workspace.lock()?);
                 self.workbench
                     .lock()
                     .await

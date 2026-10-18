@@ -211,3 +211,47 @@ fn project_storage_is_ignored_without_changing_existing_ignore_rules() {
         custom
     );
 }
+
+#[test]
+fn discovery_and_guide_do_not_create_project_storage() {
+    let project = tempfile::tempdir().unwrap();
+    let mut client = Client::open(project.path());
+    for (method, mut params) in [
+        ("server/discover", json!({})),
+        ("tools/list", json!({})),
+        ("resources/list", json!({})),
+        ("resources/read", json!({"uri":"dotmend://guides/editing"})),
+        (
+            "resources/read",
+            json!({"uri":"retro-art://guides/editing"}),
+        ),
+    ] {
+        client.sequence += 1;
+        params["_meta"] = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{}});
+        let request = json!({"jsonrpc":"2.0","id":client.sequence,"method":method,"params":params});
+        writeln!(client.child.stdin.as_mut().unwrap(), "{request}").unwrap();
+        let mut line = String::new();
+        client.output.read_line(&mut line).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert!(reply.get("error").is_none(), "{reply}");
+        assert!(
+            !project.path().join(".dotmend").exists(),
+            "{method} created storage"
+        );
+    }
+    assert_eq!(
+        client.call(
+            "inspect_workbench",
+            json!({"control_id":"unused-project-inspection"})
+        )["state"],
+        "closed"
+    );
+    assert!(!project.path().join(".dotmend").exists());
+    let opened = client.call(
+        "open_workbench",
+        json!({"control_id":"unused-project-inspection"}),
+    );
+    assert_eq!(opened["ok"], true, "{opened}");
+    assert!(project.path().join(".dotmend/art.sqlite").is_file());
+    assert_eq!(client.call("close_workbench",json!({"control_id":"unused-project-inspection","workbench_id":opened["instance"]["workbench_id"]}))["ok"],true);
+}
